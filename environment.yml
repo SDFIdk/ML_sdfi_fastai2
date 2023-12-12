@@ -1,0 +1,17 @@
+name: ML_sdfi
+channels:
+  - conda-forge
+  - fastchan
+  - pytorch
+dependencies:
+  - python=3.9
+  - gdal
+  - pillow
+  - pandas
+  - fastai
+  - reportlab
+  - psutil
+  - rasterio
+  - pip
+  - pip:
+      - git+https://github.com/rasmuspjohansson/albumentations-multi-channels

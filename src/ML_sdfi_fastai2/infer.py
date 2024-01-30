@@ -13,11 +13,81 @@ import rasterio
 import time
 import torch
 import sys
+from torch.multiprocessing import Process, Queue
+from fastai.vision.all import *
+#torch.multiprocessing.set_start_method('spawn') # otherwise we get : Error	"Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method"
+
+# Custom callback to save segmentation output
+class SaveSegmentationOutput(Callback):
+    def __init__(self, learn, save_path,batch_filenames,data_to_save_queue,experiment_settings_dict):
+        super().__init__()
+        self.learn = learn
+        self.save_path = save_path
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        self.batch_filenames = batch_filenames
+        self.data_to_save_queue = data_to_save_queue
+        self.experiment_settings_dict = experiment_settings_dict
+        self.start_time = time.time()
+
+
+    def after_pred(self):
+        call_back_start = time.time()
+        #print("CALLBACK IS RUNNING!")
+        print("self.learn.n_iter:"+str(self.learn.n_iter))
+        print("self.learn.iter:"+str(self.learn.iter))
+        print("Time per image for inference: "+str((time.time()-self.start_time )/(0.0001+self.learn.iter*self.experiment_settings_dict["batch_size"])))
+
+
+
+
+
+
+        #now tryong to save probabilities in teh same way"
+        #after aplying softmax I get identicall numbers for the first 10 numbers! (obs no log)
+        batch_probs = torch.nn.functional.softmax(self.learn.pred).cpu().numpy()
+
+
+
+        filenames= self.batch_filenames[self.learn.iter]
+        for i in range(len(batch_probs)):
+            fname = filenames[i]
+            # Use batch index to get the corresponding prediction
+            probs = batch_probs[i]
+            file_stem = Path(Path(str(fname)).name).stem
+            #print("calback saving to : "+str(self.save_path / f"{file_stem}_callback_prob.png"))
+            with rasterio.open(fname) as src:
+                # make a copy of the geotiff metadata so we can save the prediction/probabilities as the same kind of geotif as the input image
+                new_meta = src.meta.copy()
+                new_xform = src.transform
+
+            if self.experiment_settings_dict["crop_size"]:
+               y_index_start =int((probs.shape[1]- self.experiment_settings_dict["crop_size"])/2)
+               x_index_start = int((probs.shape[2]- self.experiment_settings_dict["crop_size"])/2)
+               # create a translation transform to shift the pixel coordinates
+               crop_translation = rasterio.Affine.translation(x_index_start, y_index_start)
+               # prepend the pixel translation to the original geotiff transform
+               new_xform = new_xform * crop_translation
+               new_meta['width'] = int(self.experiment_settings_dict["crop_size"])
+               new_meta['height'] = int(self.experiment_settings_dict["crop_size"])
+               new_meta['transform'] = new_xform
+               #set the number of channels in the output
+               new_meta["count"]=probs.shape[0]
+               y_index_end = y_index_start+int(self.experiment_settings_dict["crop_size"])
+               x_index_end = x_index_start+int(self.experiment_settings_dict["crop_size"])
+               probs= probs[:,y_index_start:y_index_end,x_index_start:x_index_end]
+            file_name = fname.name
+            self.data_to_save_queue.put((probs, self.save_path/file_name,new_meta))
+
+            #save_probabilities_as_uint8_no_queue(probs=probs, path_to_probabilities= str(self.save_path / f"{file_stem}_callback_prob.png"),new_meta=new_meta)
+        print("callback took: "+str(time.time() - call_back_start))
 
 def save_probabilities_as_float32(probs,path_to_probabilities,new_meta):
     """
     If we dont care about memory usage or hard disc usage we can store probs in float32
     """
+
+
+
     # probabilities are floats
     new_meta["count"] = probs.shape[0]
     new_meta["dtype"] = np.float32
@@ -25,20 +95,62 @@ def save_probabilities_as_float32(probs,path_to_probabilities,new_meta):
     with rasterio.open(path_to_probabilities, "w", **new_meta) as dest:
         dest.write(np.array((probs),dtype=np.float32))
 
+def save_probabilities_as_uint8_no_queue(probs,path_to_probabilities,new_meta):
+    """
+    not using a separate process for saving data
+    """
 
-def save_probabilities_as_uint8(probs,path_to_probabilities,new_meta):
-    """
-    Probabilities can be saved in uint8 format in order to save space and memory usage
-    """
-    # probabilities are floats scaled by multiplication and converted to uint8
+
+
+    # probabilities are floats
     new_meta["count"] = probs.shape[0]
     new_meta["dtype"] = np.uint8
 
     with rasterio.open(path_to_probabilities, "w", **new_meta) as dest:
-        dest.write(np.array((probs *255),dtype=np.uint8))
+        dest.write(np.array((probs*255),dtype=np.uint8))
 
+def save_probabilities_as_uint8(queue):
+    #(probs,path_to_probabilities,new_meta):
+    """
+    Probabilities can be saved in uint8 format in order to save space and memory usage
+    """
+    totall_time_spent_saving =0
+    try:
+        while True:
+            data_from_queue = queue.get()
+            #print("recived data:"+str(data_from_queue))
+            if data_from_queue is None:
+                print("totall time spent saving:"+str(totall_time_spent_saving))
+                break  # End the loop when None is received
+            saving_data_start_time = time.time()
+            (probs,path_to_probabilities,new_meta) = data_from_queue
+            # probabilities are floats scaled by multiplication and converted to uint8
+            new_meta["count"] = probs.shape[0]
+            new_meta["dtype"] = np.uint8
 
+            with rasterio.open(path_to_probabilities, "w", **new_meta) as dest:
+                dest.write(np.array((probs *255),dtype=np.uint8))
+            took=time.time()-saving_data_start_time
+            print("saving a single image to disk in the separatte thread took: "+str(took))
+            totall_time_spent_saving+=took
+    except KeyboardInterrupt:
+        # Handle Ctrl+C gracefully by terminating the process
+        pass
 
+def infer_with_get_preds_on_all(training,files):
+    dl = training.learn.dls.test_dl(files)
+    with_input =True
+    print("VALIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
+    training.learn.validate(dl=dl)
+    #training.learn.get_preds(dl=dl,with_input=with_input)
+
+    #return the probs for all images in the list files
+    #print("preds:"+str(preds))
+    #print("len(preds):"+str(len(preds)))
+    #return [pred[0] for pred in preds[1] ]
+
+'''
 def infer_on_single_image(training,a_file):
     """
     :param training:fastai2 object that have aces to the model and the dataloader
@@ -50,9 +162,7 @@ def infer_on_single_image(training,a_file):
     """
 
     print("classifying : "+str(a_file),end='\r')
-
-
-
+    infer_single_image_start= time.time()
     dl = training.learn.dls.test_dl([a_file]) # dl = training.learn.dls.test_dl(all_files) #
     #Does not work with 4 chanel tensors
     #if show:
@@ -65,71 +175,89 @@ def infer_on_single_image(training,a_file):
     if with_input:
         the_input= preds[0]
         the_prediction =  preds[1][0]
+        print("infering on single image took: "+str(time.time()-infer_single_image_start))
         return the_prediction
-    '''
+  
+'''
+def infer_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_txt,data_to_save_queue):
+    """
+    Replacing infer_on_all 
+    allowing for  batchwize classification
+    allowing for  multiple workers and prefetching of data
 
-        #input(the_prediction.shape)
-        if "save_probs" in experiment_settings_dict and experiment_settings_dict["save_probs"]:
-            #input("the_prediction:"+str(the_prediction))
-            #input("the_prediction.shape:"+str(the_prediction.shape))
-            data = the_prediction #np.transpose(the_prediction,[2,0,1])
-            import rasterio
-            #from https://rasterio.readthedocs.io/en/stable/topics/reproject.html
-            from rasterio.warp import calculate_default_transform, reproject, Resampling
-            dst_crs = "EPSG:25832"
-            with rasterio.open(a_file) as src:
-                #transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-                kwargs = src.meta.copy()
-
-            #set the number of channels in the output
-            kwargs["count"]=data.shape[0]
-            #probabilities are floats
-            kwargs["dtype"]=np.float32
-            path_to_probabilities = Path(output_folder)/Path("PROBS_"+a_file.name)
-
-            with rasterio.open(path_to_probabilities, 'w', **kwargs) as dst:
-                dst.write(data)
-            created_files["path_to_probabilities"]=path_to_probabilities
-        pred_1 = the_prediction
+    OBS!: I do not get as good results when doing this with model(data_batch)(very fast solution) . Unclear why, but untill I get that to work properly  I use the old solution that predicts image by image
 
 
-        #the input should have values in the range ~[-1,1]
-        inpect_input_data_range= False
-        if inpect_input_data_range:
-            print("inpecting input data to verify that data is in range[-1,1] ")
-            for i in range(len(the_input[0])):
-                input(the_input[0][i].shape)
-                input(the_input[0][i].max())
-                input(the_input[0][i].min())
+    :param experiment_settings_dict: a dictionary holding the parameters for the trainer that will be used for classification
+    :param benchmark_folder: the folder with images that will be clæassified
+    :param output_folder: the folder where the resuling predictions will be saved
+    :param  data_to_save_queue. A multiprocessing queue to send the data that should be save to a separate process that handles the saving to Disk (otherwise a bottleneck) 
 
-    else:
-        pred_1 = preds[0][0]
+
+    Saves semantic-segmentation-inference-images in output_folder
+    """
+    infer_on_all_start_time = time.time()
+    list_of_created_files = []
+
+
+    all_files = Path(all_txt).read_text().split('\n')
+    all_files=[Path(benchmark_folder)/Path(experiment_settings_dict["datatypes"][0])/Path(a_path) for a_path in all_files]
+    print("####################")
+    print("classifying in totall : "+str(len(all_files))+ " nr of images")
+    print("segmentation images are saved to: " + str(output_folder))
+    #make sure that all files are of correct type
+    im_type= experiment_settings_dict["im_type"]
+    all_files=[im_file for im_file in all_files if im_type in im_file.name]
+    print(str(experiment_settings_dict))
 
 
 
 
-    pred_arx = pred_1.argmax(dim=0)
+    #create a classifier
+    dls = sdfi_dataset.get_dataset(experiment_settings_dict)
+    training= train.basic_traininFastai2(experiment_settings_dict,dls)
+    #load saved weights
+    training.learn.load(str(pathlib.Path(experiment_settings_dict["model_to_load"]).resolve()).rstrip(".pth"))
+
+    #classify all images in benchmark_folder
+    dl = training.learn.dls.test_dl(all_files,num_workers=2) # dl = training.learn.dls.test_dl(all_files) #
 
 
-    if show:
-        #show input image
-        tmp_numpy=np.array(Image.open(a_file))
-        #nir will be visualized as alpha channel. We remove it to make image visualizable
-        tmp_numpy=tmp_numpy[:,:,0:3]
-        Image.fromarray(tmp_numpy).show()
-
-        #show prediction
-        plt.imshow(pred_arx,cmap="tab20",vmin=0, vmax=10)
-        plt.show()
-
-    path_to_predictions = Path(output_folder)/Path(a_file.name)
+    #ad callback that saves predictions to disk
+    save_callback = SaveSegmentationOutput(training.learn, Path(output_folder),np.array(dl.items).reshape(-1,int(experiment_settings_dict["batch_size"])),data_to_save_queue,experiment_settings_dict)
+    training.learn.add_cb(save_callback)
 
 
-    Image.fromarray(np.array(pred_arx,dtype=np.uint8)).save(path_to_predictions)
-    created_files["path_to_predictions"]=path_to_predictions
-    return created_files
-    '''
+    # Move the model to the GPU if available
+    if torch.cuda.is_available():
+        training.learn.model.cuda()
 
+    #make sure outputfolder exists
+    os.makedirs(output_folder, exist_ok=True)
+
+
+
+    #sending with_input=True to get_preds() makes it return the input together with the predictions
+    # Iterate over all batches in the DataLoader
+    batch_inference_loop_start = time.time()
+    batch_predictions=[]
+
+
+
+    ## using callbacks gave noisy probabiliteis but good argmax() , I must be doing something wrong !###
+
+    #save images in callback 
+
+    infer_with_get_preds_on_all(training,all_files)
+    data_to_save_queue.put(None) # Signal to the 1st save output process that saves data to disk that we are done
+    data_to_save_queue.put(None) # Signal to the 2nd save output process that saves data to disk that we are done
+    print("all data has now been predictied")
+
+    return []
+
+
+
+'''
 def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_txt):
     infer_on_all_start_time =time.time()
     """
@@ -223,12 +351,15 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
         # write the geotiff to disk
         path_to_probabilities = Path(output_folder)/Path("PROBS_"+a_file.name)
         if experiment_settings_dict["save_probs"]:
+            time_save_start = time.time()
             if experiment_settings_dict["saved_probs_format"] == "uint8":
                 save_probabilities_as_uint8(probs=probs, path_to_probabilities=path_to_probabilities,new_meta=new_meta)
             elif experiment_settings_dict["saved_probs_format"] == "float32":
                 save_probabilities_as_float32(probs=probs, path_to_probabilities=path_to_probabilities,new_meta=new_meta)
             else:
                 sys.exit("no known format to save probs in:"+str(experiment_settings_dict["saved_probs_format"]))
+            time_save_end = time.time()
+            print("saving the probs took:"+str(time_save_end-time_save_start))
 
 
         if experiment_settings_dict["save_preds"]:
@@ -241,39 +372,8 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
             with rasterio.open(path_to_predictions, "w", **new_meta) as dest:
                 dest.write(np.expand_dims(preds,axis=0))
             dictionary_with_created_files["path_to_predictions"]=path_to_predictions
-        '''
-        if experiment_settings_dict["save_probs"]:
-
-            #from https://rasterio.readthedocs.io/en/stable/topics/reproject.html
-            from rasterio.warp import calculate_default_transform, reproject, Resampling
-            dst_crs = "EPSG:25832"
-
-
-            #set the number of channels in the output
-            new_meta["count"]=probs.shape[0]
-            #probabilities are floats
-            new_meta["dtype"]=np.float32
-            path_to_probabilities = Path(output_folder)/Path("PROBS_"+a_file.name)
-
-            with rasterio.open(path_to_probabilities, 'w', **new_meta) as dst:
-                dst.write(probs)
-            dictionary_with_created_files["path_to_probabilities:"]=path_to_probabilities
-
-        if experiment_settings_dict["save_preds"]:
-            preds = probs.argmax(dim=0)
-            if show:
-                #show prediction
-                plt.imshow(preds,cmap="tab20",vmin=0, vmax=10)
-                plt.show()
-
-            path_to_predictions = Path(output_folder)/Path(a_file.name)
-
-
-            Image.fromarray(np.array(preds,dtype=np.uint8)).save(path_to_predictions)
-            dictionary_with_created_files["path_to_predictions"]=path_to_predictions
-            
-        '''
-        list_of_created_files.append(dictionary_with_created_files)
+      
+      
 
     print("list_of_created_files:"+str(list_of_created_files))
     print("infer_on_all DONE, result in : "+str(output_folder))
@@ -282,7 +382,7 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
     print("infer_on_all took :"+str(infer_on_all_end_time-infer_on_all_start_time))
 
     return list_of_created_files
-
+'''
 
 def ad_values_nececeary_for_dataset_loader_creation(experiment_settings_dict):
     """
@@ -302,6 +402,9 @@ def ad_values_nececeary_for_dataset_loader_creation(experiment_settings_dict):
     experiment_settings_dict["sceduler"]= "fit_one_cycle" #this should really ot be needed but is demanded by the code for now
 
 def main(config):
+    torch.multiprocessing.set_start_method('spawn') # otherwise we get : Error      "Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spa>
+
+
 
     # Check if CUDA is available
     print("##########################################")
@@ -326,7 +429,40 @@ def main(config):
 
 
     show= "show" in experiment_settings_dict and experiment_settings_dict["show"] # False #debug variable , show input and output of inference
-    infer_on_all(experiment_settings_dict=experiment_settings_dict,benchmark_folder = benchmark_folder,output_folder=output_folder,show=show,all_txt=experiment_settings_dict["path_to_all_benchmarkset_txt"])
+
+
+    # Create a multiprocessing queue for sending prediction_probabilities_images to be saved to disk as images
+    queue = Queue()
+    # Create a process for saving prediction_probabilites as images
+    process1 = Process(target=save_probabilities_as_uint8, args=(queue,))
+    # faster if we have two processes?
+    process1b = Process(target=save_probabilities_as_uint8, args=(queue,))
+    # Create a process for doing inference
+    process2 = Process(target=infer_all, args=(experiment_settings_dict,benchmark_folder,output_folder,show,experiment_settings_dict["path_to_all_benchmarkset_txt"], queue))
+
+    try:
+        # Start both processes
+        process1.start()
+        process1b.start()
+        process2.start()
+
+        # Wait for the first process to finish
+        process2.join()
+        process1.join()
+        process1b.join()
+    except KeyboardInterrupt:
+        # Terminate both processes if Ctrl+C is pressed during the execution
+        process2.terminate()
+        process1.terminate()
+        process1b.terminate()
+    finally:
+        # Close the queue
+        queue.close()
+        queue.join_thread()
+
+
+    ##infer_all(experiment_settings_dict=experiment_settings_dict,benchmark_folder = benchmark_folder,output_folder=output_folder,show=show,all_txt=experiment_settings_dict["path_to_all_benchmarkset_txt"])
+    ##infer_on_all(experiment_settings_dict=experiment_settings_dict,benchmark_folder = benchmark_folder,output_folder=output_folder,show=show,all_txt=experiment_settings_dict["path_to_all_benchmarkset_txt"])
 
     print("DONE processing all images in :"+str(benchmark_folder))
 

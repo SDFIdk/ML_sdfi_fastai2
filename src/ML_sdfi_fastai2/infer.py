@@ -35,7 +35,7 @@ class SaveSegmentationOutput(Callback):
         #print("CALLBACK IS RUNNING!")
         print("self.learn.n_iter:"+str(self.learn.n_iter))
         print("self.learn.iter:"+str(self.learn.iter))
-        print("Time per image for inference: "+str((time.time()-self.start_time )/(0.0001+self.learn.iter*self.experiment_settings_dict["batch_size"])))
+        print("Time per image for inference: "+str((time.time()-self.start_time )/((self.learn.iter+1)*self.experiment_settings_dict["batch_size"])))
 
 
 
@@ -139,9 +139,6 @@ def save_probabilities_as_uint8(queue):
 
 def infer_with_get_preds_on_all(training,files):
     dl = training.learn.dls.test_dl(files)
-    with_input =True
-    print("VALIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-
     training.learn.validate(dl=dl)
     #training.learn.get_preds(dl=dl,with_input=with_input)
 
@@ -150,7 +147,7 @@ def infer_with_get_preds_on_all(training,files):
     #print("len(preds):"+str(len(preds)))
     #return [pred[0] for pred in preds[1] ]
 
-'''
+
 def infer_on_single_image(training,a_file):
     """
     :param training:fastai2 object that have aces to the model and the dataloader
@@ -178,7 +175,7 @@ def infer_on_single_image(training,a_file):
         print("infering on single image took: "+str(time.time()-infer_single_image_start))
         return the_prediction
   
-'''
+
 def infer_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_txt,data_to_save_queue):
     """
     Replacing infer_on_all 
@@ -257,8 +254,9 @@ def infer_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_t
 
 
 
-'''
+
 def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_txt):
+    print("OBS! this is a depricated function only kept as a refernece")
     infer_on_all_start_time =time.time()
     """
     :param experiment_settings_dict: a dictionary holding the parameters for the trainer that will be used for classification
@@ -310,7 +308,9 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
 
 
     #classify all images in benchmark_folder
+    new_image_start_time = time.time()
     for a_file in all_files:
+
         with rasterio.open(a_file) as src:
             # make a copy of the geotiff metadata so we can save the prediction/probabilities as the same kind of geotif as the input image
             new_meta = src.meta.copy()
@@ -353,7 +353,7 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
         if experiment_settings_dict["save_probs"]:
             time_save_start = time.time()
             if experiment_settings_dict["saved_probs_format"] == "uint8":
-                save_probabilities_as_uint8(probs=probs, path_to_probabilities=path_to_probabilities,new_meta=new_meta)
+                save_probabilities_as_uint8_no_queue(probs=probs, path_to_probabilities=path_to_probabilities,new_meta=new_meta)
             elif experiment_settings_dict["saved_probs_format"] == "float32":
                 save_probabilities_as_float32(probs=probs, path_to_probabilities=path_to_probabilities,new_meta=new_meta)
             else:
@@ -372,6 +372,8 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
             with rasterio.open(path_to_predictions, "w", **new_meta) as dest:
                 dest.write(np.expand_dims(preds,axis=0))
             dictionary_with_created_files["path_to_predictions"]=path_to_predictions
+        print("time for one image is :"+str(time.time()-new_image_start_time))
+        new_image_start_time = time.time()
       
       
 
@@ -382,7 +384,7 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
     print("infer_on_all took :"+str(infer_on_all_end_time-infer_on_all_start_time))
 
     return list_of_created_files
-'''
+
 
 def ad_values_nececeary_for_dataset_loader_creation(experiment_settings_dict):
     """
@@ -431,38 +433,51 @@ def main(config):
     show= "show" in experiment_settings_dict and experiment_settings_dict["show"] # False #debug variable , show input and output of inference
 
 
-    # Create a multiprocessing queue for sending prediction_probabilities_images to be saved to disk as images
-    queue = Queue()
-    # Create a process for saving prediction_probabilites as images
-    process1 = Process(target=save_probabilities_as_uint8, args=(queue,))
-    # faster if we have two processes?
-    process1b = Process(target=save_probabilities_as_uint8, args=(queue,))
-    # Create a process for doing inference
-    process2 = Process(target=infer_all, args=(experiment_settings_dict,benchmark_folder,output_folder,show,experiment_settings_dict["path_to_all_benchmarkset_txt"], queue))
+    #Default configuration is to use separate processes for loading data(only works on linux) saving data (works on both platforms) and inference (can be done on GPU)
+    save_images_in_separate_proces = True
+    #running everything in the same process might be faster if the dataset is very small (skipping overhead for creating and closing down processes and queues )or if there is no GPU available and not enough cpu cores to infer save and load in separate processes on separate cores
 
-    try:
-        # Start both processes
-        process1.start()
-        process1b.start()
-        process2.start()
+    if save_images_in_separate_proces:
 
-        # Wait for the first process to finish
-        process2.join()
-        process1.join()
-        process1b.join()
-    except KeyboardInterrupt:
-        # Terminate both processes if Ctrl+C is pressed during the execution
-        process2.terminate()
-        process1.terminate()
-        process1b.terminate()
-    finally:
-        # Close the queue
-        queue.close()
-        queue.join_thread()
+
+        # Create a multiprocessing queue for sending prediction_probabilities_images to be saved to disk as images
+        queue = Queue()
+        # Create a process for saving prediction_probabilites as images
+        process1 = Process(target=save_probabilities_as_uint8, args=(queue,))
+        # faster if we have two processes? TODO: we should be able to use a worker pool instead with variable nr of workers
+        process1b = Process(target=save_probabilities_as_uint8, args=(queue,))
+        # Create a process for doing inference
+        process2 = Process(target=infer_all, args=(experiment_settings_dict,benchmark_folder,output_folder,show,experiment_settings_dict["path_to_all_benchmarkset_txt"], queue))
+
+        try:
+            # Start both processes
+            process1.start()
+            process1b.start()
+            process2.start()
+
+            # Wait for the first process to finish
+            process2.join()
+            process1.join()
+            process1b.join()
+        except KeyboardInterrupt:
+            # Terminate both processes if Ctrl+C is pressed during the execution
+            process2.terminate()
+            process1.terminate()
+            process1b.terminate()
+        finally:
+            # Close the queue
+            queue.close()
+            queue.join_thread()
+
+    else:
+        infer_on_all(experiment_settings_dict=experiment_settings_dict, benchmark_folder=benchmark_folder,
+                     output_folder=output_folder, show=show,
+                     all_txt=experiment_settings_dict["path_to_all_benchmarkset_txt"])
+
 
 
     ##infer_all(experiment_settings_dict=experiment_settings_dict,benchmark_folder = benchmark_folder,output_folder=output_folder,show=show,all_txt=experiment_settings_dict["path_to_all_benchmarkset_txt"])
-    ##infer_on_all(experiment_settings_dict=experiment_settings_dict,benchmark_folder = benchmark_folder,output_folder=output_folder,show=show,all_txt=experiment_settings_dict["path_to_all_benchmarkset_txt"])
+    ##
 
     print("DONE processing all images in :"+str(benchmark_folder))
 

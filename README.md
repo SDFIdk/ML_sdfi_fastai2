@@ -43,4 +43,4 @@ configs/example_configs/report_example_dataset.ini holds parameters for creating
 python report.py --config configs/example_configs/report_example_dataset.ini
 ```
 
-All example config files work with the example dataset that comes with the github https://github.com/rasmuspjohansson/multi_channel_dataset_creation.git
+All example config files work with the example dataset that comes with the github https://github.com/SDFIdk/multi_channel_dataset_creation.git

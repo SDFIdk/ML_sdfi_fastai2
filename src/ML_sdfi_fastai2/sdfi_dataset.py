@@ -446,7 +446,10 @@ def get_dataset(experiment_settings_dict):
         return np.array(Image.open(label_path))
     def building_func(image_pathlib_path):
         building_path =  Path(experiment_settings_dict["path_to_buildings"]) / f'{image_pathlib_path.stem}{label_type}'
-        return np.array(Image.open(building_path))
+        if building_path.is_file():
+            return np.array(Image.open(building_path))
+        else:
+            return None
 
     def label_plus_building_func(image_pathlib_path):
         """
@@ -458,13 +461,17 @@ def get_dataset(experiment_settings_dict):
         """
         label = label_func(image_pathlib_path)
         building_label =building_func(image_pathlib_path)
-        green_roof_mask= label==5
-        building_mask= building_label!=0
-        #set label-pixels to buliding value
-        label[building_mask] = building_label[building_mask]
-        #all green roof pixels have been overwritten to buldings. make them green roof again.
-        label[green_roof_mask] = 5
-        return label
+        if building_label == None:
+            #return original label if there are no buildings in the area
+            return label
+        else:
+            green_roof_mask= label==5
+            building_mask= building_label!=0
+            #set label-pixels to buliding value
+            label[building_mask] = building_label[building_mask]
+            #all green roof pixels have been overwritten to buldings. make them green roof again.
+            label[green_roof_mask] = 5
+            return label
 
 
 

@@ -1,5 +1,8 @@
 import torch.nn as nn
 
+
+
+
 #a simple conv classifier
 class CNN(nn.Module):
     def __init__(self,n_classes,n_channels):

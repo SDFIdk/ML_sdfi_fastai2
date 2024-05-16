@@ -442,12 +442,31 @@ def get_dataset(experiment_settings_dict):
     #IF folder structure is images/subfolder/image.tif
     #label_func = lambda o: pth / ('labels/masks/') / f'{o.stem}{o.suffix}'
     def label_func(image_pathlib_path):
-
-
         label_path =  label_folder / f'{image_pathlib_path.stem}{label_type}'
-
-        
         return np.array(Image.open(label_path))
+    def building_func(image_pathlib_path):
+        building_path =  Path(experiment_settings_dict["path_to_buildings"]) / f'{image_pathlib_path.stem}{label_type}'
+        return np.array(Image.open(building_path))
+
+    def label_plus_building_func(image_pathlib_path):
+        """
+        Use this function instead of the label_func() function when adding biulding footprints as a label
+
+        update all pixles in the label to the building value IF they have a non-zero value in the bilding label.
+        :param image_pathlib_path:
+        :return:
+        """
+        label = label_func(image_pathlib_path)
+        building_label =building_func(image_pathlib_path)
+        green_roof_mask= label==5
+        building_mask= building_label!=0
+        #set label-pixels to buliding value
+        label[building_mask] = building_label[building_mask]
+        #all green roof pixels have been overwritten to buldings. make them green roof again.
+        label[green_roof_mask] = 5
+        return label
+
+
 
 
 

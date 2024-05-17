@@ -41,6 +41,8 @@ import time
 import pathlib
 import shutil
 import utils.utils as sdfi_utils
+from fastai.vision.all import GradientAccumulation
+
 class SkipToEpoch(Callback):
     """
     fastai2 does not support the start_epoch functionality that existed in fastai1. 
@@ -166,7 +168,7 @@ class basic_traininFastai2:
 
         if self.experiment_settings_dict["sceduler"] =="fit_one_cycle":
             self.learn.fit_one_cycle(n_epoch=self.experiment_settings_dict["epochs"], lr_max=lr_max,
-                                     cbs=[GradientClip(0.05),SkipToEpoch(start_epoch=start_epoch),SaveModelCallback(every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
+                                     cbs=[GradientAccumulation(self.experiment_settings_dict["n_acc"]),GradientClip(self.experiment_settings_dict["gradient_clip"]),SkipToEpoch(start_epoch=start_epoch),SaveModelCallback(every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
                                           CSVLogger(fname= self.experiment_settings_dict["job_name"]+".csv", append=True),
                                           DoThingsAfterBatch(n_batch=n_batch)
                                           ])

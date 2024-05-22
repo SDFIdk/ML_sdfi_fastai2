@@ -42,6 +42,7 @@ import pathlib
 import shutil
 import utils.utils as sdfi_utils
 from wwf.vision.timm import *
+from fastai.vision.all import GradientAccumulation
 
 def make_deterministic():
     print("making the training repeatable so that differetn runs easier can be compared to each other")
@@ -60,6 +61,7 @@ def make_deterministic():
     # Set PyTorch to use deterministic algorithms
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 
 class SkipToEpoch(Callback):
@@ -187,7 +189,7 @@ class basic_traininFastai2:
 
         if self.experiment_settings_dict["sceduler"] =="fit_one_cycle":
             self.learn.fit_one_cycle(n_epoch=self.experiment_settings_dict["epochs"], lr_max=lr_max,
-                                     cbs=[GradientClip(float(self.experiment_settings_dict["gradient_clip"])),SkipToEpoch(start_epoch=start_epoch),SaveModelCallback(every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
+                                     cbs=[GradientAccumulation(self.experiment_settings_dict["n_acc"]),GradientClip(self.experiment_settings_dict["gradient_clip"]),SkipToEpoch(start_epoch=start_epoch),SaveModelCallback(every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
                                           CSVLogger(fname= self.experiment_settings_dict["job_name"]+".csv", append=True),
                                           DoThingsAfterBatch(n_batch=n_batch)
                                           ])

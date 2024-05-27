@@ -14,7 +14,8 @@ dependencies:
   - reportlab
   - psutil
   - rasterio
-  - torchvision
+  - torchvision==0.17.1
+  - pytorch==2.2.1
   - pytorch-cuda=12.1
   - pip
   - pip:

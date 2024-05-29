@@ -66,7 +66,7 @@ def get_image_paths(pandas_dataframe,predictions_dir,test_lb_dir,nr_of_images_to
     
 
 
-    im_paths_list={"images":[],"labels":[],"predictions":[]}
+    im_paths_list={"images":[],"labels":[],"predictions":[],"buildings":[]}
     #the index_of_first_sorted_image_to_show, makes it posible to show the images in the middle of the sorted list , the 4th quiartile or simular
     for i in range(index_of_first_sorted_image_to_show,index_of_first_sorted_image_to_show+nr_of_images_to_show):
         print("i:"+str(i))
@@ -86,6 +86,7 @@ def get_image_paths(pandas_dataframe,predictions_dir,test_lb_dir,nr_of_images_to
         prediction_mask_path = predictions_dir / file_name
 
         label_mask_path = test_lb_dir/(pathlib.Path(file_name).stem + experiment_settings_dict["label_image_type"])
+        building_mask_path = pathlib.Path(experiment_settings_dict["path_to_buildings"])/image_file_path.name
         if not os.path.exists(label_mask_path):
             #file does not exist, we are missing the block folder!
             block_folder = os.path.split(pathlib.Path(image_file_path).parent)[-1]
@@ -98,6 +99,7 @@ def get_image_paths(pandas_dataframe,predictions_dir,test_lb_dir,nr_of_images_to
         im_paths_list["images"].append(image_file_path)
         im_paths_list["labels"].append(label_mask_path)
         im_paths_list["predictions"].append(prediction_mask_path)
+        im_paths_list["buildings"].append(building_mask_path)
     
     return im_paths_list
 
@@ -132,9 +134,9 @@ def create_pdf_report(dataset,predicted_images_paths_list,nr_of_images_to_show,a
     print('creating visualized images for the '+str(len(predicted_images_paths_list["images"])) + 'images')
     for i in range(len(predicted_images_paths_list["images"])):
 
-        #pred_house_mask=numpy.array(Image.open(predicted_images_paths_list["predictions"][i]))==1
+        #pred_mask=numpy.array(Image.open(predicted_images_paths_list["predictions"][i]))==1
         #label_mask= numpy.array(Image.open(predicted_images_paths_list["labels"][i]))==1
-        #masks_image = image_from_mask.image_from_masks(label_mask,pred_house_mask)
+        #masks_image = image_from_mask.image_from_masks(label_mask,pred_mask)
 
 
         #input_image=Image.open(predicted_images_paths_list["images"][i])
@@ -143,7 +145,7 @@ def create_pdf_report(dataset,predicted_images_paths_list,nr_of_images_to_show,a
 
         
 
-        original_and_masked_images= image_from_mask.masked_image_from_image_prediction_label(image_path=predicted_images_paths_list["images"][i], label_path=predicted_images_paths_list["labels"][i], prediction_path=predicted_images_paths_list["predictions"][i])
+        original_and_masked_images= image_from_mask.masked_image_from_image_prediction_label(image_path=predicted_images_paths_list["images"][i], label_path=predicted_images_paths_list["labels"][i], prediction_path=predicted_images_paths_list["predictions"][i],building_path= predicted_images_paths_list["buildings"][i])
         im_list.append(original_and_masked_images)
 
     dataset_name = Path(dataset).name
@@ -163,7 +165,7 @@ def create_pdf_report(dataset,predicted_images_paths_list,nr_of_images_to_show,a
     first_im.convert("RGB").save(pdf_filename, "PDF" ,resolution=100.0, save_all=True, append_images=[im.convert("RGB") for im in im_list])
     pickle.dump(predicted_images_paths_list, open(pkl_filename, "wb" ) )
 
-
+'''
 def DEPRICATED_create_report(pandas_dataframe,predictions_dir,test_lb_dir,nr_of_images_to_show,property_to_sort_on,ascending,index_of_first_sorted_image_to_show,subset=None):
 
 
@@ -201,9 +203,9 @@ def DEPRICATED_create_report(pandas_dataframe,predictions_dir,test_lb_dir,nr_of_
             assert os.path.exists(prediction_mask_path), print(str(prediction_mask_path) + " does not exist!")
 
 
-        pred_house_mask=numpy.array(Image.open(prediction_mask_path))==1
+        pred__mask=numpy.array(Image.open(prediction_mask_path))==1
         label_mask= numpy.array(Image.open(label_mask_path))==1
-        masks_image = image_from_mask.image_from_masks(label_mask,pred_house_mask)
+        masks_image = image_from_mask.image_from_masks(label_mask,pred__mask)
         input_image=Image.open(image_file_path)
         composite_image = image_from_mask.image_from_image_and_mask(input_image,numpy.array(masks_image))
         original_and_masked_images= image_from_mask.create_concatenated_image(input_image,composite_image)
@@ -215,10 +217,10 @@ def DEPRICATED_create_report(pandas_dataframe,predictions_dir,test_lb_dir,nr_of_
     if index_of_first_sorted_image_to_show!=0:
         pdf_filename=pdf_filename.replace(".pdf","indexed_from_"+str(index_of_first_sorted_image_to_show)+".pdf")
     first_im.convert("RGB").save(pdf_filename, "PDF" ,resolution=100.0, save_all=True, append_images=[im.convert("RGB") for im in im_list])
-    
-def save_confusion_matrix(average_confusion_matrix,path_to_labels,csv_file_name):
+'''    
+def save_confusion_matrix(average_confusion_matrix,path_to_labels,csv_file_name,experiment_settings_dict):
     # create list of categories e.g ["Baggrund","Bygning","Skov","Vej","Vand","Mark"]
-    categories = [line.rstrip() for line in open(path_to_labels / "../codes.txt").readlines()]
+    categories = [line.rstrip() for line in open(experiment_settings_dict["path_to_codes"]).readlines()]
     dataframe=pd.DataFrame(data=average_confusion_matrix, index=categories, columns=categories)
     dataframe.to_csv(csv_file_name,index=True)
 
@@ -358,7 +360,7 @@ def create_reports(dataset,pandas_dataframe,predictions_dir,subset_file,path_to_
 
     csv_confusion_matrix_file_path = report_cache_directory / pathlib.Path(subset_name+"_confusionmatrix.csv")
     #save confusio matrix in the report cache directory
-    save_confusion_matrix(average_confusion_matrix,path_to_labels,csv_file_name=csv_confusion_matrix_file_path) #str(subset_file).rstrip(".txt")+"_confusionmatrix.csv")
+    save_confusion_matrix(average_confusion_matrix,path_to_labels,csv_confusion_matrix_file_path,experiment_settings_dict) #str(subset_file).rstrip(".txt")+"_confusionmatrix.csv")
     
 
     nr_of_images_to_show = experiment_settings_dict["nr_of_images_to_show"]# 4 # 20

@@ -446,10 +446,7 @@ def get_dataset(experiment_settings_dict):
         return np.array(Image.open(label_path))
     def building_func(image_pathlib_path):
         building_path =  Path(experiment_settings_dict["path_to_buildings"]) / f'{image_pathlib_path.stem}{label_type}'
-        if building_path.is_file():
-            return np.array(Image.open(building_path))
-        else:
-            return None
+        return np.array(Image.open(building_path))
 
     def label_plus_building_func(image_pathlib_path):
         """
@@ -460,18 +457,31 @@ def get_dataset(experiment_settings_dict):
         :return:
         """
         label = label_func(image_pathlib_path)
-        building_label =building_func(image_pathlib_path)
-        if building_label == None:
-            #return original label if there are no buildings in the area
+        if not (Path(experiment_settings_dict["path_to_buildings"]) / f'{image_pathlib_path.stem}{label_type}').is_file():
+            #print("building file is missing")
             return label
         else:
-            green_roof_mask= label==5
-            building_mask= building_label!=0
-            #set label-pixels to buliding value
-            label[building_mask] = building_label[building_mask]
-            #all green roof pixels have been overwritten to buldings. make them green roof again.
-            label[green_roof_mask] = 5
-            return label
+            pass #print("building file exist")
+
+        building_label =building_func(image_pathlib_path)
+        green_roof_mask= label==5
+        building_mask= building_label!=0
+        #set label-pixels to buliding value
+        label[building_mask] = building_label[building_mask]
+        #all green roof pixels have been overwritten to buldings. make them green roof again.
+        label[green_roof_mask] = 5
+        return label
+
+    def get_label_func(experiment_settings_dict):
+        if experiment_settings_dict["extra_labels"]=="buildings":
+            input("extending labels with buildings")
+            return label_plus_building_func
+        elif experiment_settings_dict["extra_labels"]=="None":
+            input("using ordinary labels")
+            return label_func
+        else:
+            sys.exit("experiment_settings_dict['extra_labels'] should be 'buildings' or 'None'")
+            
 
 
 
@@ -509,10 +519,12 @@ def get_dataset(experiment_settings_dict):
 
     batch_tfms=[Normalize.from_stats(*multichannel_stats)]
     #This worked but I got problems with Normalize.encode(wants a tensorimage) (in site-packages/fastai/data/transforms.py) so we could replace normalize with NormalizeMultichannelImage
+
+    
     a_dataset = DataBlock(blocks=(ImageBlockReplacement.MultichannelImageBlock(cls=ImageBlockReplacement.MultiChannelImage,experiment_settings_dict=experiment_settings_dict), MaskBlock(codes)),
                    get_items=sdfe_get_images,
                    splitter=dataset_splitter,
-                   get_y=label_func,
+                   get_y=get_label_func(experiment_settings_dict),
                    item_tfms=sdfi_tfm,
                    batch_tfms=batch_tfms)  #*aug_transforms(),
                    

@@ -439,7 +439,8 @@ def main(config):
     if "save_workers" in experiment_settings_dict and int(experiment_settings_dict["save_workers"])>0:
         #using a set of workers for saving the predictions to disk
         # Create a multiprocessing queue for sending prediction_probabilities_images to be saved to disk as images
-        queue = Queue()
+        #set a max size. if this is reached we need to have more workers that handle the data in the queue
+        queue = Queue(20)
         # Create processes for saving prediction_probabilites as images (one proces for each save_worker 
         save_inference_proces_workers = [ Process(target=save_probabilities_as_uint8, args=(queue,)) for process in range(int(experiment_settings_dict["save_workers"]))]
             

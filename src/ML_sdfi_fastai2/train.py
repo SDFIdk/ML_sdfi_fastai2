@@ -231,10 +231,12 @@ class basic_traininFastai2:
             """
             targ = targ.squeeze(1)
             
-            void_code=-1 #use a code that does not exist in the dataset
+            void_code=ignore_index #use a code that does not exist in the dataset
+            #print("void sum:"+str((targ == void_code).sum()))
             #the masked target is the same as the target (we dont use 'dont care labels')
-            mask = targ != void_code  #Rasmus is pretty sure voide code is the "do not care label (e.g should not influence the cost function)"
-            
+            mask = targ != void_code
+            #print("input:"+str(inp))
+            #print("targ:"+str(targ[])) 
             return (inp.argmax(dim=1)[mask] == targ[mask]).float().mean()
 
         

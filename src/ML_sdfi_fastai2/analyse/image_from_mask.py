@@ -353,7 +353,7 @@ def get_prediction_label_match_visualization(label_path,prediction_path,class_re
     colored_image = np.array(np.apply_along_axis(get_color,axis=2,arr=label_predictions_pairs))
     return colored_image
 
-def masked_image_from_image_prediction_label(image_path,label_path,prediction_path,class_remappings={},verbose=False,save=False,show=False,visualization_name="visualized",afterburn_path = None):
+def masked_image_from_image_prediction_label(image_path,label_path,prediction_path,building_path,class_remappings={},verbose=False,save=False,show=False,visualization_name="visualized",afterburn_path = None):
     """
     alternative to visualize_triplet() they should most probably merge eventually
 
@@ -373,6 +373,11 @@ def masked_image_from_image_prediction_label(image_path,label_path,prediction_pa
     im = Image.open(label_path)
     
     numpy_label=np.array(im,dtype=np.uint8)
+    if building_path!= None:
+        print("ad the bulding masks to the labels")
+        bulding_numpy = np.array(Image.open(building_path),dtype=np.uint8)
+        where_there_are_buildings = bulding_numpy!=0
+        numpy_label[where_there_are_buildings] = bulding_numpy[where_there_are_buildings]
     if verbose:
         print("number of non_zero label_pixels : "+str((numpy_label>0).flatten().sum()))
     input_image = Image.open(image_path)

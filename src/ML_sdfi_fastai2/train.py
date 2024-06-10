@@ -256,7 +256,7 @@ class basic_traininFastai2:
         if self.experiment_settings_dict["model"] in ["efficientnetv1_m","efficientnetv2_m","efficientnetv2_l"]:
             #using a timm_learner from the wwf library (walk faster with fastai)
             input("building tim based unet learner with wwtf library: pres enter to continue")
-        input("rremember n_out,  handle pretrained better")
+            input("rremember n_out,  handle pretrained better")
         if self.experiment_settings_dict["model"] in ["efficientnetv2_s","efficientnetv2_m","efficientnetv2_l"]:
             pretrained = False
         else:
@@ -271,9 +271,12 @@ class basic_traininFastai2:
             learn = unet_learner(dls, self.experiment_settings_dict["model"], loss_func=a_loss_func,metrics=valid_accuracy, wd=1e-2,
                              path= self.experiment_settings_dict["log_folder"],
                              model_dir=self.experiment_settings_dict["model_folder"] ,n_in=len(experiment_settings_dict["means"]))#callback_fns=[partial(CSVLogger, filename= experiment_settings_dict["job_name"], append=True)])
-
-
-        return learn
+        if self.experiment_settings_dict["to_fp16"]:
+            input("training with mixed precision")
+            return learn.to_fp16()
+        else:
+            input("not training with mixed precision")
+            return learn
 
 
 

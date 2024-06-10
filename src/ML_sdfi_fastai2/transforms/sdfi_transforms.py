@@ -99,13 +99,16 @@ class AlbumentationsTransform(DisplayedTransform):
 #AN alternative way of handling this might be to chain al transforms allready in the aug function we wend to the Itemtransform
 #For the time beeing we use separat classes since it works. Separating the transforms this way might also make it easier to handle rgb-nir images in a sensible way when we want to aply transforms to images with more channels
 
-def get_transforms(list_of_transform_names,droppable_channels):
+def get_transforms(experiment_settings_dict):
     """
-    param: list_of_transform_names e.g ["GaussNoise","Brightness"]
+    param: experiment_settings_dict: dictionary holding all information about what transforms should be aplied
     para: droppable_channels e.g [4,5] for dropping out the 4th or 5th channel in an RGB-Nir-deviation-pulsewidth image
     """
+
+    droppable_channels=experiment_settings_dict["droppable_channels"]  # e.g [4,5] for dropping out the 4th or 5th channel in an RGB-Nir-deviation-pulsewidth image
+
     transforms=[]
-    for transform_name in list_of_transform_names:
+    for transform_name in experiment_settings_dict["transforms"]:
         if "GaussNoise" == transform_name:
                 transforms.append(SegmentationAlbumentationsTransformGaussNoise())
         elif "Transpose" == transform_name:
@@ -129,6 +132,9 @@ def get_transforms(list_of_transform_names,droppable_channels):
                 #order=100 apply after all other transforms (especially after the -mean/std transformation in order to make sure the output is 0)
                 #Normalize.from_stats has order 99 so 100 will cause the channel dropout to be aplied after the normalizations
                 transforms.append(SegmentationAlbumentationsChannel_dropout(droppable_channels=droppable_channels,split_idx=0, order=100))
+        elif "crop" == transform_name:
+                #order =99 , becasue we want to aply the croping after the rotations
+                transforms.append(SegmentationAlbumentationsCrop(size=experiment_settings_dict["crop_size"],split_idx=0,order=99))
         else:
             input(" no transform with name :"+str(transform_name))
         
@@ -183,6 +189,26 @@ class SegmentationAlbumentationsChannel_dropout(ItemTransform):
         return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(aug["image"],(2,0,1)),dtype=np.float32)), aug["mask"] #back to chanel, y,x
 
  
+
+#croppping all trainingdata to a certain size in order to save memory and that way be able to eblarge batchsize. 
+#randomly cropping instead of preproicessing to crop size makes it posible to handle rotations better. this way we can also produce many different crops from same trainingdata
+class SegmentationAlbumentationsCrop(ItemTransform):
+    def __init__(self,size,split_idx, order): 
+        ItemTransform.__init__(self,split_idx=split_idx, order=order)
+        self.aug =albumentations.RandomCrop(p=1,always_apply=True,height=size[0],width=size[1])
+    def encodes(self, x):
+        img,mask = x
+        img= np.transpose(img,(1,2,0))
+        img=np.array(img,dtype=np.uint8).astype(np.uint8).copy()
+        aug = self.aug(image=img, mask=np.array(mask))
+        return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(aug["image"],(2,0,1)),dtype=np.float32)), PILMask.create(aug["mask"])
+
+
+
+
+
+
+
 class SegmentationAlbumentationsVerticalFlip(ItemTransform):
     def __init__(self,): self.aug = albumentations.VerticalFlip(p=0.5)
     def encodes(self, x):

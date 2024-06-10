@@ -477,7 +477,7 @@ def get_dataset(experiment_settings_dict):
             input("extending labels with buildings")
             return label_plus_building_func
         elif experiment_settings_dict["extra_labels"]=="None":
-            input("using ordinary labels")
+            #input("using ordinary labels")
             return label_func
         else:
             sys.exit("experiment_settings_dict['extra_labels'] should be 'buildings' or 'None'")
@@ -490,7 +490,7 @@ def get_dataset(experiment_settings_dict):
 
     if experiment_settings_dict["transforms"]:
         
-        sdfi_tfm = sdfi_transforms.get_transforms(experiment_settings_dict["transforms"],droppable_channels=experiment_settings_dict["droppable_channels"])
+        sdfi_tfm = sdfi_transforms.get_transforms(experiment_settings_dict = experiment_settings_dict)
 
         #sdfi_tfm = sdfi_transforms.get_transforms(["GaussNoise","Transpose","RandomBrightness","RandomShadow","ShiftScaleRotate"])
         

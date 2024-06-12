@@ -541,6 +541,17 @@ def get_dataset(experiment_settings_dict):
 
     #Setting number of workers > 0 should speed up training if data is stored on slow medium lika NAS or HDD, to get this to work on windows is however tricky,se https://github.com/pytorch/pytorch/issues/16943
     dls = a_dataset.dataloaders(Path(experiment_settings_dict["path_to_images"]) , bs=experiment_settings_dict["batch_size"], num_workers=int(experiment_settings_dict["num_workers"]))
+
+
+    #if we use cropping as augmetnation for training we might want to reduce the batchsize during validation to make sure we dont use to much memory
+    #during validation ,batchnorm layer use the running statistics collected during training so it should be safe to use batchsize=1 during validation
+    # Customize DataLoaders to have different batch sizes
+    train_dl = dls.train.new(bs=experiment_settings_dict["batch_size"])
+    valid_dl = dls.valid.new(bs=1)
+
+    # Create a new DataLoaders object with the custom DataLoader instances
+    dls = DataLoaders(train_dl, valid_dl)
+
     #Lastly let's make our vocabulary a part of our DataLoaders, as our loss function needs to deal with the Void label
     dls.vocab = codes
     

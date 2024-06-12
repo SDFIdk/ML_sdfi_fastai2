@@ -30,8 +30,8 @@ import train
 import infer
 import pathlib
 import ImageBlockReplacement
-
-
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 
 
 """
@@ -429,7 +429,7 @@ def set_seed(dls,x=42): #must have dls, as it has an internal random.Random
         torch.backends.cudnn.benchmark = False
         if torch.cuda.is_available(): torch.cuda.manual_seed_all(x)        
 
-def visualize_transforms(experiment_settings_dict,image):
+def visualize_transforms(experiment_settings_dict,image,save_images):
 
 
     if image:
@@ -555,7 +555,10 @@ def visualize_transforms(experiment_settings_dict,image):
 
             im_np= np.clip(im_np, 0, 255)
             im_np=np.array(im_np,dtype=np.uint8)
-            Image.fromarray(im_np).show()
+            if save_images:
+                Image.fromarray(im_np).save("image_"+str(i)+".jpg")
+            else:
+                Image.fromarray(im_np).show()
 
 
 
@@ -573,8 +576,26 @@ def visualize_transforms(experiment_settings_dict,image):
 
             wait_for_enter = False
             if show_label_image:
-                plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
-                plt.show()
+                if save_images:
+                    # Define the colormap and norm
+                    cmap = cm.get_cmap('tab20', 13)  # 'tab20' colormap with 13 unique colors
+                    norm = mcolors.Normalize(vmin=0, vmax=12)
+
+                    # Apply the colormap to the label data
+                    colored_image = cmap(norm(label_data))
+
+                    # Remove the alpha channel and convert to 8-bit (0-255) RGB format
+                    colored_image_rgb = (colored_image[..., :3] * 255).astype(np.uint8)
+
+
+                    Image.fromarray(colored_image_rgb).save("label_"+str(i)+".jpg")
+                    #plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
+                    #plt.axis('off')  # Turn off the axis
+                    # Saving the plot to disk without any additional elemnts to make it easier to compare to the input data
+                    #plt.savefig("label_"+str(i)+".jpg",bbox_inches='tight', pad_inches=0, format='jpg')
+                else:
+                    plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
+                    plt.show()
 
 
             if wait_for_enter:
@@ -610,10 +631,12 @@ if __name__ == "__main__":
 
     parser.add_argument("-c", "--config", help="one or more paths to experiment config file",nargs ='+',required=True)
     parser.add_argument("-i", "--image", help="one image to send through datapipeline (inclusive transforms)",required=False)
+    parser.add_argument('--save_images', action='store_true', default=False)
+
     args = parser.parse_args()
 
 
     for config_file_path in args.config:
         experiment_settings_dict= sdfi_utils.load_settings_from_config_file(config_file_path)
-        visualize_transforms(experiment_settings_dict,image=args.image)
+        visualize_transforms(experiment_settings_dict,image=args.image,save_images=args.save_images)
 

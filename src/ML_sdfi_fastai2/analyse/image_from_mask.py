@@ -374,10 +374,13 @@ def masked_image_from_image_prediction_label(image_path,label_path,prediction_pa
     
     numpy_label=np.array(im,dtype=np.uint8)
     if building_path!= None:
-        print("ad the bulding masks to the labels")
-        bulding_numpy = np.array(Image.open(building_path),dtype=np.uint8)
-        where_there_are_buildings = bulding_numpy!=0
-        numpy_label[where_there_are_buildings] = bulding_numpy[where_there_are_buildings]
+        try:
+            print("ad the bulding masks to the labels")
+            bulding_numpy = np.array(Image.open(building_path),dtype=np.uint8)
+            where_there_are_buildings = bulding_numpy!=0
+            numpy_label[where_there_are_buildings] = bulding_numpy[where_there_are_buildings]
+        except:
+            print("failed to ad buldings")
     if verbose:
         print("number of non_zero label_pixels : "+str((numpy_label>0).flatten().sum()))
     input_image = Image.open(image_path)

@@ -134,7 +134,8 @@ def get_transforms(experiment_settings_dict):
                 transforms.append(SegmentationAlbumentationsChannel_dropout(droppable_channels=droppable_channels,split_idx=0, order=100))
         elif "crop" == transform_name:
                 #order =99 , becasue we want to aply the croping after the rotations
-                transforms.append(SegmentationAlbumentationsCrop(size=experiment_settings_dict["crop_size"],split_idx=0,order=99))
+                #split_idx = Nóne. we want to crop input for both traininhg and validation in order to not risk using more memory during validation an thus cause a out-of-memory crash during validation
+                transforms.append(SegmentationAlbumentationsCrop(size=experiment_settings_dict["crop_size"],split_idx=None,order=99))
         else:
             input(" no transform with name :"+str(transform_name))
         
@@ -190,11 +191,12 @@ class SegmentationAlbumentationsChannel_dropout(ItemTransform):
 
  
 
-#croppping all trainingdata to a certain size in order to save memory and that way be able to eblarge batchsize. 
+#croppping all trainingdata to a certain size in order to save memory and that way be able to enlarge batchsize. 
 #randomly cropping instead of preproicessing to crop size makes it posible to handle rotations better. this way we can also produce many different crops from same trainingdata
 class SegmentationAlbumentationsCrop(ItemTransform):
     def __init__(self,size,split_idx, order): 
         ItemTransform.__init__(self,split_idx=split_idx, order=order)
+        #p1 and allways_apply both make the transform allways happen (if split_idx has the correct value )
         self.aug =albumentations.RandomCrop(p=1,always_apply=True,height=size[0],width=size[1])
     def encodes(self, x):
         img,mask = x

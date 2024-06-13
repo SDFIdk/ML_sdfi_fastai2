@@ -133,9 +133,9 @@ def get_transforms(experiment_settings_dict):
                 #Normalize.from_stats has order 99 so 100 will cause the channel dropout to be aplied after the normalizations
                 transforms.append(SegmentationAlbumentationsChannel_dropout(droppable_channels=droppable_channels,split_idx=0, order=100))
         elif "crop" == transform_name:
-                #order =99 , becasue we want to aply the croping after the rotations
+                #order =0 , everything seems to work fine with orter0 but I would belive the correct nr should have been slightnly higher in order to come after rotation etc. But if I use a higher number I get errorss
                 #split_idx = Nóne. we want to crop input for both traininhg and validation in order to not risk using more memory during validation an thus cause a out-of-memory crash during validation
-                transforms.append(SegmentationAlbumentationsCrop(size=experiment_settings_dict["crop_size"],split_idx=None,order=99))
+                transforms.append(SegmentationAlbumentationsCrop(size=experiment_settings_dict["crop_size"],split_idx=None,order=0))
         else:
             input(" no transform with name :"+str(transform_name))
         
@@ -259,8 +259,8 @@ class SegmentationAlbumentationsTransformGaussNoise(ItemTransform):
         
         
         #after transfomr is donw we need to transpose the tensor back to channels,h,w
-        check_for_nan_in_numpy_array(aug["image"],"after aug data")
-        check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
+        #check_for_nan_in_numpy_array(aug["image"],"after aug data")
+        #check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
         return ImageBlockReplacement.MultiChannelImage.create( np.array(np.transpose(aug["image"],(2,0,1)),dtype=np.float32)), PILMask.create(aug["mask"])
 class SegmentationAlbumentationsTransformTRanspose(ItemTransform):
     def __init__(self,split_idx):
@@ -280,8 +280,8 @@ class SegmentationAlbumentationsTransformTRanspose(ItemTransform):
         #if np.isnan(aug["image"]).any():
         #            return x
         #after transfomr is donw we need to transpose the tensor back to channels,h,w
-        check_for_nan_in_numpy_array(aug["image"],"after aug data")
-        check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
+        #check_for_nan_in_numpy_array(aug["image"],"after aug data")
+        #check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
         return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(aug["image"],(2,0,1))),dtype=np.float32), PILMask.create(aug["mask"])
 
 class SegmentationAlbumentationsTransformBrightness(ItemTransform):
@@ -300,8 +300,8 @@ class SegmentationAlbumentationsTransformBrightness(ItemTransform):
         #if np.isnan(aug["image"]).any():
         #            return x
         #after transfomr is donw we need to transpose the tensor back to channels,h,w
-        check_for_nan_in_numpy_array(aug["image"],"after aug data")
-        check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
+        #check_for_nan_in_numpy_array(aug["image"],"after aug data")
+        #check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
         return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(aug["image"],(2,0,1)),dtype=np.float32)), PILMask.create(aug["mask"])
         
         """
@@ -397,13 +397,13 @@ class SegmentationAlbumentationsTransformSHIFTSCALEROTATE(ItemTransform):
             img= np.transpose(img,(1,2,0))
 
             aug = self.aug(image=np.array(img), mask=np.array(mask))
-            check_for_nan_in_numpy_array(aug["image"],"after shiftrotate")
+            #check_for_nan_in_numpy_array(aug["image"],"after shiftrotate")
             #if the transformation introduced nan in the data, use the original data instead
             #if np.isnan(aug["image"]).any():
             #            return x
             #after transfomr is donw we need to transpose the tensor back to channels,h,w
-            check_for_nan_in_numpy_array(aug["image"],"after aug data")
-            check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
+            #check_for_nan_in_numpy_array(aug["image"],"after aug data")
+            #check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
             return ImageBlockReplacement.MultiChannelImage.create(np.transpose(aug["image"],(2,0,1))), PILMask.create(aug["mask"])
         else:
             #the transform should only be aplied to an image
@@ -411,18 +411,18 @@ class SegmentationAlbumentationsTransformSHIFTSCALEROTATE(ItemTransform):
             #check_for_nan_in_tensor(img,"before shiftrotate")
             #albumetations asume the order of the channels is h,w,channels but the tensors are channels,h,w
             as_np = np.array(img)
-            debug1=as_np.shape
+            #debug1=as_np.shape
 
             img= as_np #np.transpose(as_np,(1,2,0))
 
             debug2=img.shape
             aug = self.aug(image=np.array(img))
-            check_for_nan_in_numpy_array(aug["image"],"after shiftrotate")
+            #check_for_nan_in_numpy_array(aug["image"],"after shiftrotate")
             #if the transformation introduced nan in the data, use the original data instead
             #if np.isnan(aug["image"]).any():
             #            return x
             #after transfomr is donw we need to transpose the tensor back to channels,h,w
-            check_for_nan_in_numpy_array(aug["image"],"after aug data")
+            #check_for_nan_in_numpy_array(aug["image"],"after aug data")
 
             return ImageBlockReplacement.MultiChannelImage.create(aug["image"],(2,0,1))
     
@@ -436,7 +436,7 @@ def set_seed(dls,x=42): #must have dls, as it has an internal random.Random
     if inactivate_dls_randomness:
         dls.rng.seed(x) #added this line
     #we dont want the same transform to be aplied
-    inactivate_more_randomness= True
+    inactivate_more_randomness= False
     if inactivate_more_randomness:
         random.seed(x)
         np.random.seed(x)

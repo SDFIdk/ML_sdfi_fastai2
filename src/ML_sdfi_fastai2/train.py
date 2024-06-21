@@ -16,6 +16,7 @@ from fastai.data.block import DataBlock
 from fastai.data.external import untar_data, URLs
 from fastai.data.transforms import get_image_files, FuncSplitter, Normalize
 from fastai.layers import Mish
+from fastai.layers import  _get_norm
 from fastai.losses import BaseLoss
 from fastai.optimizer import ranger
 from fastai.torch_core import tensor
@@ -255,11 +256,12 @@ class basic_traininFastai2:
 
         if self.experiment_settings_dict["model"] in ["efficientnetv1_m","efficientnetv2_m","efficientnetv2_l","efficientnetv2_rw_s.ra2_in1k","efficientnetv2_rw_m.agc_in1k","tf_efficientnetv2_l.in21k","tf_efficientnetv2_xl.in21k"]:
             #using a timm_learner from the wwf library (walk faster with fastai)
-            print("building tim based unet learner with wwtf library: pres enter to continue")
+            print("building tim based unet learner with wwtf library...")
 
             pretrained=True
 
-            learn = timm_unet_learner(dls, self.experiment_settings_dict["model"], loss_func=a_loss_func,metrics=valid_accuracy, wd=1e-2,
+
+            learn = timm_unet_learner(dls, self.experiment_settings_dict["model"], loss_func=a_loss_func,metrics=valid_accuracy,bottleneck=experiment_settings_dict["bottleneck"], wd=1e-2,
                              path= self.experiment_settings_dict["log_folder"],pretrained=pretrained,
                              model_dir=self.experiment_settings_dict["model_folder"] ,n_in=len(experiment_settings_dict["means"]))#callback_fns=[partial(CSVLogger, filename= experiment_settings_dict["job_name"], append=True)])
         else:

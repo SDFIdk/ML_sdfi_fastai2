@@ -64,7 +64,8 @@ def make_deterministic():
     torch.backends.cudnn.benchmark = False
 
 
-
+#depricated since we now can use start_epochs argumetn to fit_one_cykle
+'''
 class SkipToEpoch(Callback):
     """
     fastai2 does not support the start_epoch functionality that existed in fastai1. 
@@ -84,7 +85,7 @@ class SkipToEpoch(Callback):
         if self.epoch < self._skip_to:
             raise CancelEpochException
 
-
+'''
 class DoThingsAfterBatch(Callback):
     """
     Save model after n batch
@@ -186,17 +187,17 @@ class basic_traininFastai2:
         #IN order to monitor the acuracy we might have to modifie the learner as they talk about here https://forums.fast.ai/t/equivalent-of-add-metrics-in-fastai2/77575/2
         #In order to skip to a a certain epoch before training (and get the Lr of the apropriate part of the LR-scedule we ad a skip_to_epoch callback)
         #If you get problems with nan in training loss it might be a good idea to ad 'GradientClip(0.1)' to the csbs list
-        start_epoch=self.experiment_settings_dict["last_epoch"]
+        start_epoch=self.experiment_settings_dict["last_epoch"]+1
 
         if self.experiment_settings_dict["sceduler"] =="fit_one_cycle":
-            self.learn.fit_one_cycle(n_epoch=self.experiment_settings_dict["epochs"], lr_max=lr_max,
-                                     cbs=[GradientAccumulation(self.experiment_settings_dict["n_acc"]),GradientClip(self.experiment_settings_dict["gradient_clip"]),SkipToEpoch(start_epoch=start_epoch),SaveModelCallback(with_opt=True,every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
+            self.learn.fit_one_cycle(n_epoch=self.experiment_settings_dict["epochs"],start_epoch=start_epoch, lr_max=lr_max,
+                                     cbs=[GradientAccumulation(self.experiment_settings_dict["n_acc"]),GradientClip(self.experiment_settings_dict["gradient_clip"]),SaveModelCallback(with_opt=True,every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
                                           CSVLogger(fname= self.experiment_settings_dict["job_name"]+".csv", append=True),
                                           DoThingsAfterBatch(n_batch=n_batch)
                                           ])
         elif self.experiment_settings_dict["sceduler"] =="fixed":
-            self.learn.fit(n_epoch=self.experiment_settings_dict["epochs"], lr=lr_max,
-                           cbs=[SkipToEpoch(start_epoch=start_epoch),SaveModelCallback(with_opt=True,every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
+            self.learn.fit(n_epoch=self.experiment_settings_dict["epochs"],start_epoch=start_epoch, lr=lr_max,
+                           cbs=[SaveModelCallback(with_opt=True,every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
                                 CSVLogger(fname= self.experiment_settings_dict["job_name"]+".csv", append=True),
                                 DoThingsAfterBatch(n_batch=n_batch)
                                 ])

@@ -135,7 +135,8 @@ def get_transforms(experiment_settings_dict):
         elif "crop" == transform_name:
                 #order =0 , everything seems to work fine with orter0 but I would belive the correct nr should have been slightnly higher in order to come after rotation etc. But if I use a higher number I get errorss
                 #split_idx = Nóne. we want to crop input for both traininhg and validation in order to not risk using more memory during validation an thus cause a out-of-memory crash during validation
-                transforms.append(SegmentationAlbumentationsCrop(size=experiment_settings_dict["crop_size"],split_idx=None,order=0))
+                transforms.append(SegmentationAlbumentationsRandomCrop(size=experiment_settings_dict["crop_size"],split_idx=0,order=0)) # split_idx =0 : only apply during trainming !
+                transforms.append(SegmentationAlbumentationsCentreCrop(size=experiment_settings_dict["crop_size"],split_idx=1,order=0)) # split_idx =1 : only aply during valideation ! 
         else:
             input(" no transform with name :"+str(transform_name))
         
@@ -193,7 +194,7 @@ class SegmentationAlbumentationsChannel_dropout(ItemTransform):
 
 #croppping all trainingdata to a certain size in order to save memory and that way be able to enlarge batchsize. 
 #randomly cropping instead of preproicessing to crop size makes it posible to handle rotations better. this way we can also produce many different crops from same trainingdata
-class SegmentationAlbumentationsCrop(ItemTransform):
+class SegmentationAlbumentationsRandomCrop(ItemTransform):
     def __init__(self,size,split_idx, order): 
         ItemTransform.__init__(self,split_idx=split_idx, order=order)
         #p1 and allways_apply both make the transform allways happen (if split_idx has the correct value )
@@ -204,11 +205,18 @@ class SegmentationAlbumentationsCrop(ItemTransform):
         img=np.array(img,dtype=np.uint8).astype(np.uint8).copy()
         aug = self.aug(image=img, mask=np.array(mask))
         return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(aug["image"],(2,0,1)),dtype=np.float32)), PILMask.create(aug["mask"])
-
-
-
-
-
+#fixed centre crop during validaiton in order to get the same input each time
+class SegmentationAlbumentationsCentreCrop(ItemTransform):
+    def __init__(self,size,split_idx, order):
+        ItemTransform.__init__(self,split_idx=split_idx, order=order)
+        #p1 and allways_apply both make the transform allways happen (if split_idx has the correct value )
+        self.aug =albumentations.CenterCrop(p=1,always_apply=True,height=size[0],width=size[1])
+    def encodes(self, x):
+        img,mask = x
+        img= np.transpose(img,(1,2,0))
+        img=np.array(img,dtype=np.uint8).astype(np.uint8).copy()
+        aug = self.aug(image=img, mask=np.array(mask))
+        return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(aug["image"],(2,0,1)),dtype=np.float32)), PILMask.create(aug["mask"])
 
 
 class SegmentationAlbumentationsVerticalFlip(ItemTransform):

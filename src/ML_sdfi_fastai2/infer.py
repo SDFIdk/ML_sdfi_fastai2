@@ -31,6 +31,7 @@ class SaveSegmentationOutput(Callback):
 
 
     def after_pred(self):
+        #print("room left in queue: "+str(self.data_to_save_queue.maxsize - self.data_to_save_queue.qsize()))
         call_back_start = time.time()
         #print("CALLBACK IS RUNNING!")
         print("self.learn.n_iter:"+str(self.learn.n_iter))
@@ -51,10 +52,17 @@ class SaveSegmentationOutput(Callback):
         filenames= self.batch_filenames[self.learn.iter]
         for i in range(len(batch_probs)):
             fname = filenames[i]
+            input_data_path = fname
             # Use batch index to get the corresponding prediction
             probs = batch_probs[i]
             file_stem = Path(Path(str(fname)).name).stem
             #print("calback saving to : "+str(self.save_path / f"{file_stem}_callback_prob.png"))
+            file_name = fname.name
+            self.data_to_save_queue.put((probs,input_data_path ,self.save_path/file_name,self.experiment_settings_dict))
+
+
+
+            '''
             with rasterio.open(fname) as src:
                 # make a copy of the geotiff metadata so we can save the prediction/probabilities as the same kind of geotif as the input image
                 new_meta = src.meta.copy()
@@ -77,6 +85,7 @@ class SaveSegmentationOutput(Callback):
                probs= probs[:,y_index_start:y_index_end,x_index_start:x_index_end]
             file_name = fname.name
             self.data_to_save_queue.put((probs, self.save_path/file_name,new_meta,self.experiment_settings_dict))
+            '''
 
             #save_probabilities_as_uint8_no_queue(probs=probs, path_to_probabilities= str(self.save_path / f"{file_stem}_callback_prob.png"),new_meta=new_meta)
         print("callback took: "+str(time.time() - call_back_start))
@@ -123,7 +132,32 @@ def save_probabilities_as_uint8(queue):
                 print("totall time spent saving:"+str(totall_time_spent_saving))
                 break  # End the loop when None is received
             saving_data_start_time = time.time()
-            (probs,path_to_probabilities,new_meta,experiment_settings_dict) = data_from_queue
+            (probs,input_data_path ,path_to_probabilities,experiment_settings_dict) = data_from_queue
+
+            with rasterio.open(input_data_path) as src:
+                # make a copy of the geotiff metadata so we can save the prediction/probabilities as the same kind of geotif as the input image
+                new_meta = src.meta.copy()
+                new_xform = src.transform
+
+            if experiment_settings_dict["crop_size"]:
+               y_index_start =int((probs.shape[1]- experiment_settings_dict["crop_size"])/2)
+               x_index_start = int((probs.shape[2]- experiment_settings_dict["crop_size"])/2)
+               # create a translation transform to shift the pixel coordinates
+               crop_translation = rasterio.Affine.translation(x_index_start, y_index_start)
+               # prepend the pixel translation to the original geotiff transform
+               new_xform = new_xform * crop_translation
+               new_meta['width'] = int(experiment_settings_dict["crop_size"])
+               new_meta['height'] = int(experiment_settings_dict["crop_size"])
+               new_meta['transform'] = new_xform
+               #set the number of channels in the output
+               new_meta["count"]=probs.shape[0]
+               y_index_end = y_index_start+int(experiment_settings_dict["crop_size"])
+               x_index_end = x_index_start+int(experiment_settings_dict["crop_size"])
+               probs= probs[:,y_index_start:y_index_end,x_index_start:x_index_end]
+
+
+
+            #(probs,path_to_probabilities,new_meta,experiment_settings_dict) = data_from_queue
             '''
 
             # probabilities are floats scaled by multiplication and converted to uint8

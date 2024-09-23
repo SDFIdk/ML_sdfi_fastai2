@@ -205,7 +205,9 @@ def save_probabilities_as_uint8(queue):
 
 def infer_with_get_preds_on_all(training,files):
     dl = training.learn.dls.test_dl(files)
-    training.learn.validate(dl=dl)
+    #no gradients should be computed during inference!
+    with torch.no_grad():
+        training.learn.validate(dl=dl)
     #training.learn.get_preds(dl=dl,with_input=with_input)
 
     #return the probs for all images in the list files
@@ -284,6 +286,7 @@ def infer_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_t
     #make sure that all files are of correct type
     im_type= experiment_settings_dict["im_type"]
     all_files=[im_file for im_file in all_files if im_type in im_file.name]
+    #in order to infer batch by batch we need to make sure that the length of the dataset can be divided by batchsize
     all_files =extend_list_to_multiple_of_x(all_files,experiment_settings_dict["batch_size"])
     print("####################")
     print("classifying in totall : "+str(len(all_files))+ " nr of images")
@@ -489,7 +492,10 @@ def ad_values_nececeary_for_dataset_loader_creation(experiment_settings_dict):
     experiment_settings_dict["sceduler"]= "fit_one_cycle" #this should really ot be needed but is demanded by the code for now
 
 def main(config):
-    torch.multiprocessing.set_start_method('spawn') # otherwise we get : Error      "Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spa>
+
+    if not torch.multiprocessing.get_start_method(allow_none=True):
+        #this is nly alowed to be set once. and the if statement above makes sure its only set once
+        torch.multiprocessing.set_start_method('spawn') # otherwise we get : Error      "Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spa>
 
 
 

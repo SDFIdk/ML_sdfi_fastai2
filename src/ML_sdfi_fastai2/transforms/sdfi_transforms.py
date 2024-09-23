@@ -105,7 +105,7 @@ def get_transforms(experiment_settings_dict):
     para: droppable_channels e.g [4,5] for dropping out the 4th or 5th channel in an RGB-Nir-deviation-pulsewidth image
     """
 
-    droppable_channels=experiment_settings_dict["droppable_channels"]  # e.g [4,5] for dropping out the 4th or 5th channel in an RGB-Nir-deviation-pulsewidth image
+    #droppable_channels=experiment_settings_dict["droppable_channels"]  # e.g [4,5] for dropping out the 4th or 5th channel in an RGB-Nir-deviation-pulsewidth image
 
     transforms=[]
     for transform_name in experiment_settings_dict["transforms"]:
@@ -131,16 +131,19 @@ def get_transforms(experiment_settings_dict):
                 #split_idx=0 == only aply on data in trainingset
                 #order=100 apply after all other transforms (especially after the -mean/std transformation in order to make sure the output is 0)
                 #Normalize.from_stats has order 99 so 100 will cause the channel dropout to be aplied after the normalizations
-                transforms.append(SegmentationAlbumentationsChannel_dropout(droppable_channels=droppable_channels,split_idx=0, order=100))
+                transforms.append(SegmentationAlbumentationsChannel_dropout(droppable_channels=experiment_settings_dict["droppable_channels"],split_idx=0, order=100))
         elif "crop" == transform_name:
                 #order =0 , everything seems to work fine with orter0 but I would belive the correct nr should have been slightnly higher in order to come after rotation etc. But if I use a higher number I get errorss
                 #split_idx = Nóne. we want to crop input for both traininhg and validation in order to not risk using more memory during validation an thus cause a out-of-memory crash during validation
                 transforms.append(SegmentationAlbumentationsRandomCrop(size=experiment_settings_dict["crop_size"],split_idx=0,order=0)) # split_idx =0 : only apply during trainming !
                 transforms.append(SegmentationAlbumentationsCentreCrop(size=experiment_settings_dict["crop_size"],split_idx=1,order=0)) # split_idx =1 : only aply during valideation ! 
+        elif "channel_coruption" == transform_name:
+                #split_idx=0 == only aply on data in trainingset
+                #order=100 apply after all other transforms 
+                #Normalize.from_stats has order 99 so 100 will cause the channel coruption to be aplied after the normalizations
+                transforms.append(SegmentationAlbumentationsChannelCorruption(corruptible_channels=experiment_settings_dict["channel_coruption"], p_rotate=0.1, p_flip=0.1, split_idx=0, order=100))
         else:
             input(" no transform with name :"+str(transform_name))
-        
-                
     return transforms
     
 def check_for_nan_in_tensor(tensor,info="info to show if there are nans"):
@@ -185,6 +188,7 @@ class SegmentationAlbumentationsChannel_dropout(ItemTransform):
         img= np.transpose(img,(1,2,0)) #channel,y,x to ,y,x,chanel
         img=np.array(img,dtype=np.uint8).astype(np.uint8).copy()
         aug = self.aug(image=img, mask=np.array(mask))
+
 
 
 
@@ -391,6 +395,41 @@ class SegmentationAlbumentationsTransformSHADOW(ItemTransform):
             
         
         
+class SegmentationAlbumentationsChannelCorruption(ItemTransform):
+    def __init__(self, corruptible_channels, p_rotate=0.5, p_flip=0.5, split_idx=0, order=100):
+        """
+        corruptible_channels: list of channels that can be corrupted
+        p_rotate: probability of applying a random 90-degree rotation
+        p_flip: probability of applying random mirroring (flip) transformations
+        """
+        ItemTransform.__init__(self, split_idx=split_idx, order=order)
+        self.corruptible_channels = corruptible_channels
+
+        # Define the albumentations augmentations
+        self.aug = albumentations.Compose([
+            albumentations.RandomRotate90(p=p_rotate),   # Random 90, 180, 270 degree rotation
+            albumentations.Flip(p=p_flip),               # Random horizontal and vertical flip
+        ], additional_targets={'mask': 'mask'})          # Ensure the mask is unaffected
+
+    def encodes(self, x):
+        img, mask = x
+        img = np.transpose(img, (1, 2, 0))  # channel, y, x to y, x, channel
+        img = np.array(img, dtype=np.uint8).astype(np.uint8).copy()
+
+        # Apply augmentations to the specified corruptible channels
+        for channel_idx in self.corruptible_channels:
+            # Create a dummy image with only the single channel to corrupt
+            corrupted_channel = img[..., channel_idx]
+
+            # Apply albumentations augmentations only to the corrupted channel
+            aug = self.aug(image=corrupted_channel, mask=np.array(mask))
+            img[..., channel_idx] = aug["image"]  # Replace the corrupted channel in the original image
+
+        # Convert the image back to (channels, height, width)
+        img_aug = np.transpose(img, (2, 0, 1))
+
+        # Return the corrupted image and the unmodified mask
+        return ImageBlockReplacement.MultiChannelImage.create(np.array(img_aug, dtype=np.float32)), np.array(mask)
 
 class SegmentationAlbumentationsTransformSHIFTSCALEROTATE(ItemTransform):
     def __init__(self,split_idx):
@@ -550,7 +589,7 @@ def visualize_transforms(experiment_settings_dict,image,save_images):
 
             first_image=first_image.transpose([1,2,0])
 
-            save_rgbnir_lidar_image_to_disk = False
+            save_rgbnir_lidar_image_to_disk = True
             if save_rgbnir_lidar_image_to_disk:
                 #INSPECTING RGB-Nir-lidar
                 rgbnirlidar_np = np.array(((first_image*np.array(stds))+np.array(means))*255)

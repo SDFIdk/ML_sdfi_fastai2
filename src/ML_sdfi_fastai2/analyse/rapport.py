@@ -468,6 +468,8 @@ def main(experiment_settings_dict):
  
 
         subset_files = get_files_in_subset(subset_file)
+        input(subset_files)
+
         
         #input(pandas_dataframe)
         #create an index array into the rows in the pandas dataframe
@@ -480,7 +482,7 @@ def main(experiment_settings_dict):
         print("sum(boolean_array_to_filtered_pandas_dataframe.to_numpy()) : " + str(
             sum(boolean_array_to_filtered_pandas_dataframe.to_numpy())))
         if (sum(boolean_array_to_filtered_pandas_dataframe.to_numpy()) ==0):
-            sys.exit("no files in subset : ")
+            sys.exit("rapport.py says : no files in subset : ")
  
         #filtered_dataframe is a pandas dataframe that only contains informtion about a special subset
         filtered_dataframe = pandas_dataframe[boolean_array_to_filtered_pandas_dataframe]

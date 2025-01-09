@@ -280,7 +280,7 @@ class basic_traininFastai2:
             print("training with mixed precision")
             return learn.to_fp16()
         else:
-            input("not training with mixed precision")
+            print("not training with mixed precision!!")
             return learn
 
 

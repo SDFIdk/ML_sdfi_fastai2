@@ -346,17 +346,17 @@ class ColorJitter(ItemTransform):
     """
     def __init__(self,split_idx):
         ItemTransform.__init__(self,split_idx=split_idx)
-        self.aug = albumentations.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05, p=0.1)
+        self.aug = albumentations.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05, p=1.0)
     def encodes(self, x):
         img,mask = x
         #check_for_nan_in_tensor(img,"before brigntes")
         #albumetations asume the order of the channels is h,w,channels but the tensors are channels,h,w
         img= np.transpose(img,(1,2,0))
         img=np.array(img,dtype=np.uint8).astype(np.uint8).copy()
-        augmented_rgb = self.aug(image=img[:,:,:3])['image']
-        extra_channels = image[:, :, 3:]  # Fourth channel (e.g., Alpha or NIR)
+        augmented_rgb = self.aug(image=img[:,:,:3], mask=np.array(mask))
+        extra_channels = img[:, :, 3:]  # Fourth channel (e.g., Alpha or NIR)
         # Reattach the extra channels
-        augmented_image = np.concatenate([augmented_rgb, extra_channels], axis=2)
+        augmented_image = np.concatenate([augmented_rgb['image'], extra_channels], axis=2)
         #check_for_nan_in_numpy_array(aug["image"],"after brighntes")
         #if the transformation introduced nan in the data, use the original data instead
         #if np.isnan(aug["image"]).any():
@@ -364,7 +364,7 @@ class ColorJitter(ItemTransform):
         #after transfomr is donw we need to transpose the tensor back to channels,h,w
         #check_for_nan_in_numpy_array(aug["image"],"after aug data")
         #check_for_nan_in_numpy_array(np.array(mask),"after GaussNoise target")
-        return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(augmented_image,(2,0,1)),dtype=np.float32)), PILMask.create(aug["mask"])
+        return ImageBlockReplacement.MultiChannelImage.create(np.array(np.transpose(augmented_image,(2,0,1)),dtype=np.float32)), PILMask.create(augmented_rgb["mask"])
             
 class SegmentationAlbumentationsTransformSHADOW(ItemTransform):
     """
@@ -611,86 +611,88 @@ def visualize_transforms(experiment_settings_dict,image,save_images):
             
             a_batch_of_images =  a_batch[0]
             a_batch_of_labels =  a_batch[1]
+            for j in range(1):
             
-            first_image= np.array(a_batch_of_images[0].cpu())
-            first_label= np.array(a_batch_of_labels[0].cpu())
+                first_image= np.array(a_batch_of_images[0].cpu())
+                first_label= np.array(a_batch_of_labels[0].cpu())
 
-            first_image=first_image.transpose([1,2,0])
+                first_image=first_image.transpose([1,2,0])
 
-            save_rgbnir_lidar_image_to_disk = True
-            if save_rgbnir_lidar_image_to_disk:
-                #INSPECTING RGB-Nir-lidar
-                rgbnirlidar_np = np.array(((first_image*np.array(stds))+np.array(means))*255)
-                rgbnirlidar_np= np.clip(rgbnirlidar_np, 0, 255)
-                rgbnirlidar_np=np.array(rgbnirlidar_np,dtype=np.uint8)
+                save_rgbnir_lidar_image_to_disk = True
+                if save_rgbnir_lidar_image_to_disk:
+                    #INSPECTING RGB-Nir-lidar
+                    try:
+                        rgbnirlidar_np = np.array(((first_image*np.array(stds))+np.array(means))*255)
+                        rgbnirlidar_np= np.clip(rgbnirlidar_np, 0, 255)
+                        rgbnirlidar_np=np.array(rgbnirlidar_np,dtype=np.uint8)
 
-                lidar = first_image[:,:,4]
-                lidar = lidar -lidar.min()
-                lidar = lidar/lidar.max()
-                lidar = lidar *255
-                Image.fromarray(lidar).save("normalizedlidar.tif")
+                        lidar = first_image[:,:,4]
+                        lidar = lidar -lidar.min()
+                        lidar = lidar/lidar.max()
+                        lidar = lidar *255
+                        Image.fromarray(lidar).save("normalizedlidar.tif")
 
-                Image.fromarray(np.array(rgbnirlidar_np,dtype=np.uint8)[:,:,0:4]).save("transformed_image_RGBnir.tif")
-                Image.fromarray(np.array(rgbnirlidar_np,dtype=np.uint8)[:,:,0:3]).save("transformed_image_RGB.tif")
-                Image.fromarray(np.array(rgbnirlidar_np,dtype=np.uint8)[:,:,4]).save("transformed_image_lidar.tif")
-
-
-
-
-            #INSPECTING RGB
-            rgb= first_image[:,:,0:3]
-            means = means[0:3]
-            stds = stds[0:3]
-
-            im_np = np.array(((rgb*np.array(stds))+np.array(means))*255)
-
-            im_np= np.clip(im_np, 0, 255)
-            im_np=np.array(im_np,dtype=np.uint8)
-            if save_images:
-                Image.fromarray(im_np).save("image_"+str(i)+".jpg")
-            else:
-                Image.fromarray(im_np).show()
+                        Image.fromarray(np.array(rgbnirlidar_np,dtype=np.uint8)[:,:,0:4]).save("transformed_image_RGBnir.tif")
+                        Image.fromarray(np.array(rgbnirlidar_np,dtype=np.uint8)[:,:,0:3]).save("transformed_image_RGB.tif")
+                        Image.fromarray(np.array(rgbnirlidar_np,dtype=np.uint8)[:,:,4]).save("transformed_image_lidar.tif")
+                    except:
+                        print("failed to visualize extra channels")
 
 
+                #INSPECTING RGB
+                rgb= first_image[:,:,0:3]
+                means = means[0:3]
+                stds = stds[0:3]
 
+                im_np = np.array(((rgb*np.array(stds))+np.array(means))*255)
 
-
-
-            label_data = np.array(first_label,dtype=np.uint8)
-            #input(image_data.max())
-            #input(image_data.min())
-            
-
-
-
-            show_label_image = True
-
-            wait_for_enter = False
-            if show_label_image:
+                im_np= np.clip(im_np, 0, 255)
+                im_np=np.array(im_np,dtype=np.uint8)
                 if save_images:
-                    # Define the colormap and norm
-                    cmap = cm.get_cmap('tab20', 13)  # 'tab20' colormap with 13 unique colors
-                    norm = mcolors.Normalize(vmin=0, vmax=12)
-
-                    # Apply the colormap to the label data
-                    colored_image = cmap(norm(label_data))
-
-                    # Remove the alpha channel and convert to 8-bit (0-255) RGB format
-                    colored_image_rgb = (colored_image[..., :3] * 255).astype(np.uint8)
-
-
-                    Image.fromarray(colored_image_rgb).save("label_"+str(i)+".jpg")
-                    #plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
-                    #plt.axis('off')  # Turn off the axis
-                    # Saving the plot to disk without any additional elemnts to make it easier to compare to the input data
-                    #plt.savefig("label_"+str(i)+".jpg",bbox_inches='tight', pad_inches=0, format='jpg')
+                    Image.fromarray(im_np).save("image_"+str(i)+str(j)+".jpg")
                 else:
-                    plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
-                    plt.show()
+                    Image.fromarray(im_np).show()
 
 
-            if wait_for_enter:
-                input("PRES ENTER FOR NEXT IMAGE")
+
+
+
+
+                label_data = np.array(first_label,dtype=np.uint8)
+                #input(image_data.max())
+                #input(image_data.min())
+            
+
+
+
+                show_label_image = True
+
+                wait_for_enter = False
+                if show_label_image:
+                    if save_images:
+                        # Define the colormap and norm
+                        cmap = cm.get_cmap('tab20', 13)  # 'tab20' colormap with 13 unique colors
+                        norm = mcolors.Normalize(vmin=0, vmax=12)
+
+                        # Apply the colormap to the label data
+                        colored_image = cmap(norm(label_data))
+
+                        # Remove the alpha channel and convert to 8-bit (0-255) RGB format
+                        colored_image_rgb = (colored_image[..., :3] * 255).astype(np.uint8)
+
+
+                        Image.fromarray(colored_image_rgb).save("label_"+str(i)+str(j)+".jpg")
+                        #plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
+                        #plt.axis('off')  # Turn off the axis
+                        # Saving the plot to disk without any additional elemnts to make it easier to compare to the input data
+                        #plt.savefig("label_"+str(i)+".jpg",bbox_inches='tight', pad_inches=0, format='jpg')
+                    else:
+                        plt.imshow(label_data,cmap="tab20",vmin=0, vmax=10)
+                        plt.show()
+
+
+                if wait_for_enter:
+                    input("PRES ENTER FOR NEXT IMAGE")
             
         #for i in range(10):
         #    dls.show_batch(rows=2, figsize=(7,5))

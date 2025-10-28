@@ -64,6 +64,7 @@ Configuration file:
 
 Run:
 ```sh
+python src/multi_channel_dataset_creation/geopackage_to_label_v2.py --geopackage example_dataset/labels/example_dataset_buildings.gpkg --input_folder example_dataset/data/splitted/rgb/ --output_folder example_dataset/buildings/splitted_buildings/ --background_value 0 --value_used_for_all_polygons 1
 python src/ML_sdfi_fastai2/report.py --config configs/example_configs/report_example_dataset.ini
 ```
 

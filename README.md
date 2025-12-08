@@ -70,7 +70,7 @@ python src/multi_channel_dataset_creation/geopackage_to_label_v2.py --geopackage
 cd ../ML_sdfi_fastai2
 python src/ML_sdfi_fastai2/report.py --config configs/example_configs/report_example_dataset.ini
 
-If you get confusing errors when creating report it is ofern casued by a faulty .csv file 
+If you get confusing errors when creating report it is often casued by a faulty .csv file 
 check ../logs_and_models/example_dataset_iter_1/iter_1/logs/iter_1.csv 
 This file should look like this
 
@@ -89,3 +89,4 @@ epoch,train_loss,valid_loss,valid_accuracy,time,lr_0,lr_1,lr_2
 
 All example configuration files are compatible with the example dataset available at:  
 👉 [https://github.com/SDFIdk/multi_channel_dataset_creation](https://github.com/SDFIdk/multi_channel_dataset_creation)
+

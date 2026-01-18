@@ -308,7 +308,7 @@ def infer_all(experiment_settings_dict,benchmark_folder,output_folder,show,all_t
     dls = sdfi_dataset.get_dataset(experiment_settings_dict)
     training= train.basic_traininFastai2(experiment_settings_dict,dls)
     #load saved weights
-    training.learn.load(str(pathlib.Path(experiment_settings_dict["model_to_load"]).resolve()).rstrip(".pth"))
+    training.learn.load(str(pathlib.Path(experiment_settings_dict["model_to_load"]).resolve()).rstrip(".pth"),weights_only=False)
 
     #classify all images in benchmark_folder
     dl = training.learn.dls.test_dl(all_files,num_workers=experiment_settings_dict["num_workers"]) # dl = training.learn.dls.test_dl(all_files) #
@@ -394,7 +394,7 @@ def infer_on_all(experiment_settings_dict,benchmark_folder,output_folder,show,al
     dls = sdfi_dataset.get_dataset(experiment_settings_dict)
     training= train.basic_traininFastai2(experiment_settings_dict,dls)
     #load saved weights
-    training.learn.load(str(pathlib.Path(experiment_settings_dict["model_to_load"]).resolve()).rstrip(".pth"))
+    training.learn.load(str(pathlib.Path(experiment_settings_dict["model_to_load"]).resolve()).rstrip(".pth"),weights_only=False)
 
     #make sure outputfolder exists
     os.makedirs(output_folder, exist_ok=True)

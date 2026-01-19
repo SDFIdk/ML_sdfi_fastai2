@@ -29,6 +29,9 @@ def get_model(model_name):
     elif model_name in ["efficientnetv2_s" ,"efficientnetv2_m","efficientnetv2_l","efficientnetv2_rw_s.ra2_in1k","efficientnetv2_rw_m.agc_in1k","tf_efficientnetv2_l.in21k","tf_efficientnetv2_xl.in21k","resnet50.a1_in1k"]:
         #using a timm  backbone. this will be handeled by the wwf.timm_learner
         return model_name
+    elif model_name in ["segformer-b1"]:
+        #segfomrer models will be treated differently
+        return model_name
     else:
         sys.exit("utils.utils.py get_mode(model_name) did not recognize model_name:"+str(model_name))
 

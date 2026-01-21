@@ -2,6 +2,7 @@
 # coding: utf-8
 """
 Train a model to do semantic segmentation
+Enhanced to support Swin Transformer + UPerNet
 """
 import sdfi_dataset
 import utils.utils as sdfi_utils
@@ -113,6 +114,333 @@ class DoThingsAfterBatch(Callback):
             print("Batch save filename:" + self.iter_string + self.lr_string)
             self.learn.save(self.iter_string)
             print("Batch model gemt!")
+
+
+# Swin + UPerNet wrapper for fastai
+class SwinUPerNetWrapper(nn.Module):
+    """
+    Wrapper for Swin Transformer + UPerNet from mmsegmentation/transformers
+    """
+    def __init__(self, model_name, num_classes, n_in=3, pretrained=True, ignore_index=255):
+        super().__init__()
+        try:
+            from transformers import AutoModelForSemanticSegmentation, UperNetConfig
+        except ImportError:
+            raise ImportError("Please install transformers: pip install transformers")
+        
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        
+        if pretrained:
+            # Load pretrained Swin + UPerNet model
+            self.model = AutoModelForSemanticSegmentation.from_pretrained(
+                model_name,
+                num_labels=num_classes,
+                ignore_mismatched_sizes=True
+            )
+            
+            # If n_in != 3, adapt the first conv layer
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+        else:
+            # Create from config
+            config = UperNetConfig.from_pretrained(model_name)
+            config.num_labels = num_classes
+            self.model = AutoModelForSemanticSegmentation(config)
+            
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+    
+    def _adapt_input_channels(self, n_in):
+        """Adapt the first layer to accept n_in channels instead of 3"""
+        # For Swin, need to modify the patch embedding
+        try:
+            # Try to access the backbone's patch embedding
+            if hasattr(self.model, 'backbone'):
+                old_patch_embed = self.model.backbone.embeddings.patch_embeddings.projection
+            elif hasattr(self.model, 'swin'):
+                old_patch_embed = self.model.swin.embeddings.patch_embeddings.projection
+            else:
+                print("Warning: Could not find patch embedding layer to adapt")
+                return
+            
+            new_patch_embed = nn.Conv2d(
+                n_in,
+                old_patch_embed.out_channels,
+                kernel_size=old_patch_embed.kernel_size,
+                stride=old_patch_embed.stride,
+                padding=old_patch_embed.padding,
+                bias=old_patch_embed.bias is not None
+            )
+            
+            nn.init.kaiming_normal_(new_patch_embed.weight, mode='fan_out', nonlinearity='relu')
+            if new_patch_embed.bias is not None:
+                nn.init.constant_(new_patch_embed.bias, 0)
+            
+            # Copy weights for first 3 channels if expanding
+            if n_in >= 3 and old_patch_embed.weight.shape[1] == 3:
+                with torch.no_grad():
+                    new_patch_embed.weight[:, :3] = old_patch_embed.weight
+            
+            # Replace the layer
+            if hasattr(self.model, 'backbone'):
+                self.model.backbone.embeddings.patch_embeddings.projection = new_patch_embed
+            elif hasattr(self.model, 'swin'):
+                self.model.swin.embeddings.patch_embeddings.projection = new_patch_embed
+        except Exception as e:
+            print(f"Warning: Could not adapt input channels: {e}")
+    
+    def forward(self, x):
+        outputs = self.model(pixel_values=x)
+        logits = outputs.logits
+        
+        # Upsample to match input size
+        if logits.shape[-2:] != x.shape[-2:]:
+            logits = F.interpolate(
+                logits,
+                size=x.shape[-2:],
+                mode='bilinear',
+                align_corners=False
+            )
+        
+        return logits
+
+
+# SegFormer model wrapper for fastai
+class SegFormerWrapper(nn.Module):
+    """
+    Wrapper for SegFormer models from transformers library to work with fastai
+    """
+    def __init__(self, model_name, num_classes, n_in=3, pretrained=True, ignore_index=255):
+        super().__init__()
+        try:
+            from transformers import SegformerForSemanticSegmentation, SegformerConfig
+        except ImportError:
+            raise ImportError("Please install transformers: pip install transformers")
+        
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        
+        if pretrained:
+            # Load pretrained model
+            self.model = SegformerForSemanticSegmentation.from_pretrained(
+                model_name,
+                num_labels=num_classes,
+                ignore_mismatched_sizes=True
+            )
+            
+            # If n_in != 3, we need to adapt the first conv layer
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+        else:
+            # Create from config
+            config = SegformerConfig.from_pretrained(model_name)
+            config.num_labels = num_classes
+            self.model = SegformerForSemanticSegmentation(config)
+            
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+    
+    def _adapt_input_channels(self, n_in):
+        """Adapt the first convolution to accept n_in channels instead of 3"""
+        # SegFormer's first layer is in the patch embedding
+        old_conv = self.model.segformer.encoder.patch_embeddings[0].proj
+        
+        # Create new conv with n_in channels
+        new_conv = nn.Conv2d(
+            n_in, 
+            old_conv.out_channels,
+            kernel_size=old_conv.kernel_size,
+            stride=old_conv.stride,
+            padding=old_conv.padding,
+            bias=old_conv.bias is not None
+        )
+        
+        # Initialize new conv
+        nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
+        if new_conv.bias is not None:
+            nn.init.constant_(new_conv.bias, 0)
+        
+        # If pretrained and expanding channels, copy weights for first 3 channels
+        if n_in >= 3 and old_conv.weight.shape[1] == 3:
+            with torch.no_grad():
+                new_conv.weight[:, :3] = old_conv.weight
+        
+        # Replace the conv layer
+        self.model.segformer.encoder.patch_embeddings[0].proj = new_conv
+    
+    def forward(self, x):
+        # SegFormer expects input in NCHW format and returns logits
+        outputs = self.model(pixel_values=x)
+        logits = outputs.logits
+        
+        # Upsample logits to match input size if needed
+        if logits.shape[-2:] != x.shape[-2:]:
+            logits = F.interpolate(
+                logits,
+                size=x.shape[-2:],
+                mode='bilinear',
+                align_corners=False
+            )
+        
+        return logits
+
+
+def create_swin_upernet_learner(dls, model_name, loss_func, metrics, wd=1e-2,
+                                path='.', model_dir='models', n_in=3,
+                                num_classes=None, pretrained=True, ignore_index=255):
+    """
+    Create a fastai learner with Swin + UPerNet model
+    """
+    if num_classes is None:
+        if hasattr(dls, 'c'):
+            num_classes = dls.c
+        elif hasattr(dls, 'vocab'):
+            num_classes = len(dls.vocab)
+        elif hasattr(dls.train, 'c'):
+            num_classes = dls.train.c
+        else:
+            raise ValueError("Could not infer number of classes from DataLoaders. Please provide num_classes explicitly.")
+    
+    model = SwinUPerNetWrapper(
+        model_name=model_name,
+        num_classes=num_classes,
+        n_in=n_in,
+        pretrained=pretrained,
+        ignore_index=ignore_index
+    )
+    
+    learn = Learner(
+        dls=dls,
+        model=model,
+        loss_func=loss_func,
+        metrics=metrics,
+        wd=wd,
+        path=path,
+        model_dir=model_dir
+    )
+    
+    return learn
+
+
+def create_segformer_learner(dls, model_name, loss_func, metrics, wd=1e-2, 
+                             path='.', model_dir='models', n_in=3, 
+                             num_classes=None, pretrained=True, ignore_index=255):
+    """
+    Create a fastai learner with SegFormer model
+    
+    Args:
+        dls: fastai DataLoaders
+        model_name: SegFormer model name (e.g., 'nvidia/segformer-b0-finetuned-ade-512-512')
+        loss_func: Loss function
+        metrics: Metrics to track
+        wd: Weight decay
+        path: Path for logs
+        model_dir: Directory for saving models
+        n_in: Number of input channels
+        num_classes: Number of output classes (inferred from dls if None)
+        pretrained: Whether to use pretrained weights
+        ignore_index: Index to ignore in loss calculation
+    """
+    if num_classes is None:
+        # Try different ways to get number of classes from DataLoaders
+        if hasattr(dls, 'c'):
+            num_classes = dls.c
+        elif hasattr(dls, 'vocab'):
+            num_classes = len(dls.vocab)
+        elif hasattr(dls.train, 'c'):
+            num_classes = dls.train.c
+        else:
+            raise ValueError("Could not infer number of classes from DataLoaders. Please provide num_classes explicitly.")
+    
+    # Create the SegFormer model
+    model = SegFormerWrapper(
+        model_name=model_name,
+        num_classes=num_classes,
+        n_in=n_in,
+        pretrained=pretrained,
+        ignore_index=ignore_index
+    )
+    
+    # Create the learner
+    learn = Learner(
+        dls=dls,
+        model=model,
+        loss_func=loss_func,
+        metrics=metrics,
+        wd=wd,
+        path=path,
+        model_dir=model_dir
+    )
+    
+    return learn
+
+
+# Additional loss functions for ensemble diversity
+class DiceLoss(nn.Module):
+    """
+    Dice Loss for semantic segmentation
+    """
+    def __init__(self, smooth=1.0, ignore_index=255):
+        super().__init__()
+        self.smooth = smooth
+        self.ignore_index = ignore_index
+    
+    def forward(self, pred, target):
+        # Get predictions
+        pred = F.softmax(pred, dim=1)
+        
+        # Flatten and handle ignore_index
+        target = target.squeeze(1)
+        mask = (target != self.ignore_index)
+        
+        # One-hot encode target
+        num_classes = pred.shape[1]
+        target_one_hot = F.one_hot(target[mask], num_classes).permute(1, 0).float()
+        pred_flat = pred.permute(0, 2, 3, 1).reshape(-1, num_classes)[mask.reshape(-1)]
+        
+        # Calculate Dice
+        intersection = (pred_flat * target_one_hot).sum(0)
+        union = pred_flat.sum(0) + target_one_hot.sum(0)
+        dice = (2. * intersection + self.smooth) / (union + self.smooth)
+        
+        return 1 - dice.mean()
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance
+    """
+    def __init__(self, alpha=0.25, gamma=2.0, ignore_index=255):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+    
+    def forward(self, pred, target):
+        target = target.squeeze(1)
+        ce_loss = F.cross_entropy(pred, target, reduction='none', ignore_index=self.ignore_index)
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        
+        return focal_loss.mean()
+
+
+class CombinedLoss(nn.Module):
+    """
+    Combination of Cross Entropy and Dice Loss
+    """
+    def __init__(self, ce_weight=0.5, dice_weight=0.5, ignore_index=255, class_weights=None):
+        super().__init__()
+        self.ce_weight = ce_weight
+        self.dice_weight = dice_weight
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index, weight=class_weights)
+        self.dice_loss = DiceLoss(ignore_index=ignore_index)
+    
+    def forward(self, pred, target):
+        ce = self.ce_loss(pred, target.squeeze(1).long())
+        dice = self.dice_loss(pred, target)
+        return self.ce_weight * ce + self.dice_weight * dice
 
 
 class basic_traininFastai2:
@@ -248,20 +576,107 @@ class basic_traininFastai2:
             return (inp.argmax(dim=1)[mask] == targ[mask]).float().mean()
 
         
-            
-        #the default loss function for a fastai2 unet is a flattened CrossEntropyloss. We here define it ourself so we can modify the ignore_index (what label should be ignored when computing the loss)
-        #https://forums.fast.ai/t/loss-function-of-unet-learner-flattenedloss-of-crossentropyloss/51605
-        #https://docs.fast.ai/losses.html#CrossEntropyLossFlat
-
+        # Setup loss function based on configuration
+        loss_type = experiment_settings_dict.get("loss_function", "cross_entropy")
+        
         if "class_weights" in experiment_settings_dict and experiment_settings_dict["class_weights"]:
             weights = torch.tensor(experiment_settings_dict["class_weights"]).cuda()
             print("Using class weights: {}".format(experiment_settings_dict["class_weights"]))
-            a_loss_func= CrossEntropyLossFlat(axis=1,ignore_index=ignore_index,weight=weights) 
         else:
+            weights = None
             print("weighting all classes equally!")
-            a_loss_func= CrossEntropyLossFlat(axis=1,ignore_index=ignore_index)
+        
+        # Create appropriate loss function
+        if loss_type == "cross_entropy":
+            a_loss_func = CrossEntropyLossFlat(axis=1, ignore_index=ignore_index, weight=weights)
+        elif loss_type == "dice":
+            a_loss_func = DiceLoss(ignore_index=ignore_index)
+        elif loss_type == "focal":
+            a_loss_func = FocalLoss(ignore_index=ignore_index)
+        elif loss_type == "combined":
+            # Combined CE + Dice
+            a_loss_func = CombinedLoss(ignore_index=ignore_index, class_weights=weights)
+        else:
+            print(f"Warning: Unknown loss function '{loss_type}', defaulting to cross_entropy")
+            a_loss_func = CrossEntropyLossFlat(axis=1, ignore_index=ignore_index, weight=weights)
+        
+        print(f"Using loss function: {loss_type}")
 
-        if "bottleneck" in self.experiment_settings_dict or  self.experiment_settings_dict["model"] in ["efficientnetv1_m","efficientnetv2_m","efficientnetv2_l","efficientnetv2_rw_s.ra2_in1k","efficientnetv2_rw_m.agc_in1k","tf_efficientnetv2_l.in21k","tf_efficientnetv2_xl.in21k"]:
+        # Check if using Swin + UPerNet
+        value = self.experiment_settings_dict["model"]
+        is_swin_upernet = isinstance(value, str) and "swin" in value.lower() and "upernet" in value.lower()
+        is_segformer = isinstance(value, str) and value.startswith("segformer")
+        
+        if is_swin_upernet:
+            print("Building Swin + UPerNet learner...")
+            
+            # Map model names to HuggingFace IDs
+            swin_models = {
+                "swin-small-upernet": "openmmlab/upernet-swin-small",
+                "swin-base-upernet": "openmmlab/upernet-swin-base",
+                "swin-large-upernet": "openmmlab/upernet-swin-large",
+            }
+            
+            model_name = swin_models.get(
+                self.experiment_settings_dict["model"].lower(),
+                self.experiment_settings_dict["model"]
+            )
+            
+            pretrained = experiment_settings_dict.get("pretrained", True)
+            
+            # Get number of classes
+            num_classes = self._get_num_classes(experiment_settings_dict)
+            
+            learn = create_swin_upernet_learner(
+                dls=dls,
+                model_name=model_name,
+                loss_func=a_loss_func,
+                metrics=valid_accuracy,
+                wd=1e-2,
+                path=self.experiment_settings_dict["log_folder"],
+                model_dir=self.experiment_settings_dict["model_folder"],
+                n_in=len(experiment_settings_dict["means"]),
+                num_classes=num_classes,
+                pretrained=pretrained,
+                ignore_index=ignore_index
+            )
+            
+        elif is_segformer:
+            print("Building SegFormer learner...")
+            
+            # Map common SegFormer model names to HuggingFace model IDs
+            segformer_models = {
+                "segformer-b0": "nvidia/segformer-b0-finetuned-ade-512-512",
+                "segformer-b1": "nvidia/segformer-b1-finetuned-ade-512-512",
+                "segformer-b2": "nvidia/segformer-b2-finetuned-ade-512-512",
+                "segformer-b3": "nvidia/segformer-b3-finetuned-ade-512-512",
+                "segformer-b4": "nvidia/segformer-b4-finetuned-ade-512-512",
+                "segformer-b5": "nvidia/segformer-b5-finetuned-ade-640-640",
+            }
+            
+            model_name = segformer_models.get(
+                self.experiment_settings_dict["model"], 
+                self.experiment_settings_dict["model"]
+            )
+            
+            pretrained = experiment_settings_dict.get("pretrained", True)
+            num_classes = self._get_num_classes(experiment_settings_dict)
+            
+            learn = create_segformer_learner(
+                dls=dls,
+                model_name=model_name,
+                loss_func=a_loss_func,
+                metrics=valid_accuracy,
+                wd=1e-2,
+                path=self.experiment_settings_dict["log_folder"],
+                model_dir=self.experiment_settings_dict["model_folder"],
+                n_in=len(experiment_settings_dict["means"]),
+                num_classes=num_classes,
+                pretrained=pretrained,
+                ignore_index=ignore_index
+            )
+            
+        elif "bottleneck" in self.experiment_settings_dict or  self.experiment_settings_dict["model"] in ["efficientnetv1_m","efficientnetv2_m","efficientnetv2_l","efficientnetv2_rw_s.ra2_in1k","efficientnetv2_rw_m.agc_in1k","tf_efficientnetv2_l.in21k","tf_efficientnetv2_xl.in21k"]:
             #using a timm_learner from the wwf library (walk faster with fastai)
             print("building tim based unet learner with wwtf library...")
 
@@ -276,14 +691,32 @@ class basic_traininFastai2:
             learn = unet_learner(dls, self.experiment_settings_dict["model"], loss_func=a_loss_func,metrics=valid_accuracy, wd=1e-2,
                              path= self.experiment_settings_dict["log_folder"],
                              model_dir=self.experiment_settings_dict["model_folder"] ,n_in=len(experiment_settings_dict["means"]))#callback_fns=[partial(CSVLogger, filename= experiment_settings_dict["job_name"], append=True)])
+        
         if self.experiment_settings_dict["to_fp16"]:
             print("training with mixed precision")
             return learn.to_fp16()
         else:
             print("not training with mixed precision!!")
             return learn
-
-
+    
+    def _get_num_classes(self, experiment_settings_dict):
+        """Helper method to get number of classes from various sources"""
+        num_classes = None
+        if "num_classes" in experiment_settings_dict:
+            num_classes = experiment_settings_dict["num_classes"]
+        elif "n_classes" in experiment_settings_dict:
+            num_classes = experiment_settings_dict["n_classes"]
+        elif "path_to_codes" in experiment_settings_dict:
+            # Load number of classes from codes.txt file
+            codes_path = experiment_settings_dict["path_to_codes"]
+            try:
+                with open(codes_path, 'r') as f:
+                    class_names = [line.strip() for line in f.readlines() if line.strip()]
+                num_classes = len(class_names)
+                print(f"Loaded {num_classes} classes from {codes_path}: {class_names}")
+            except Exception as e:
+                print(f"Warning: Could not read codes file from {codes_path}: {e}")
+        return num_classes
 
 
 def train(experiment_settings_dict):
@@ -304,51 +737,6 @@ def train(experiment_settings_dict):
     print("loading the dataset..")
     dls = sdfi_dataset.get_dataset(experiment_settings_dict)
 
-    # Define a transfomr that just prints out the 
-    '''
-    class PrintStatsTransform(Transform):
-        order = 200  # Ensures this runs last
-        max =0
-        min = 100
-        def encodes(self, x: torch.Tensor):
-            # Apply only if the input is a Tensor with 4 dimensions (batch of images)
-            if isinstance(x, torch.Tensor) and x.ndim == 4:
-                # Calculate statistics
-                print(np.array(x.cpu()))
-                print(x.shape)
-                for i in range(11):
-                    print(f"min Channel {i}:")
-                    print(np.array(x.cpu())[:,i,:,:].flatten().min())
-                    if np.array(x.cpu())[:,i,:,:].flatten().min() < self.min:
-                        self.min = np.array(x.cpu())[:,i,:,:].flatten().min()
-
-
-                for i in range(11):
-                    print(f"max Channel {i}:")
-                    print(np.array(x.cpu())[:,i,:,:].flatten().max())
-                    if np.array(x.cpu())[:,i,:,:].flatten().max() > self.max:
-                        self.max = np.array(x.cpu())[:,i,:,:].flatten().max()
-
-
-                for i in range(11):
-                    print(f"mean Channel {i}:")
-                    print(np.array(x.cpu())[:,i,:,:].flatten().mean())
-
-                for i in range(11):
-                    print(f"std Channel {i}:")
-                    print(np.array(x.cpu())[:,i,:,:].flatten().std())
-
-                print("min encountered = "+str(self.min))
-                print("max encountered = "+str(self.max))
-
-                # Print the statistics
-                #print(f"Max: {max_val:.4f}, Min: {min_val:.4f}, Mean: {mean_val:.4f}, Std: {std_val:.4f}")
-                # Return the input unchanged
-            return x
-    # Add the custom transform to the `after_batch` pipeline
-    dls.after_batch.add(PrintStatsTransform())
-    '''
- 
     print("setting up a unet training..")
     training= basic_traininFastai2(experiment_settings_dict,dls)
 
@@ -385,10 +773,6 @@ def train(experiment_settings_dict):
     sdfi_utils.save_dictionary_to_disk(experiment_settings_dict)
 
 
-
-
-
-
 def infer_model_and_log_folders(experiment_settings_dict):
     """
     :param experiment_settings_dict: a dictionary holding the parameters for the training
@@ -400,7 +784,6 @@ def infer_model_and_log_folders(experiment_settings_dict):
     experiment_settings_dict['model_folder']=( Path(experiment_settings_dict['experiment_root'])/Path(experiment_settings_dict['job_name'])/Path("models") ).resolve()
     experiment_settings_dict['log_folder']=(Path(experiment_settings_dict['experiment_root'])/Path(experiment_settings_dict['job_name'])/Path("logs")).resolve()
    
-
 
 
 if __name__ == "__main__":

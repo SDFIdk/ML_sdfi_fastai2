@@ -34,9 +34,16 @@ def get_model(model_name):
                         "segformer-b4", "segformer-b5"]:
         # SegFormer models will be treated differently
         return model_name
-    elif model_name in ["swin-small-upernet", "swin-base-upernet", "swin-large-upernet"]:
+    elif model_name in ["swin-small-upernet","swin-small-upernet", "swin-base-upernet", "swin-large-upernet"]:
         # Swin + UPerNet models
         return model_name
+    elif model_name in [
+        "convnextv2_tiny_upernet",
+        "convnextv2_small_upernet",
+        "convnextv2_base_upernet",
+        "convnextv2_large_upernet"]:
+        return model_name
+
     else:
         sys.exit("utils.utils.py get_model(model_name) did not recognize model_name: " + str(model_name))
 

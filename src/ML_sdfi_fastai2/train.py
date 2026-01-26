@@ -2,125 +2,213 @@
 # coding: utf-8
 """
 Train a model to do semantic segmentation
-Enhanced to support Swin Transformer + UPerNet
+
+Supported architectures:
+- UNet (fastai)
+- timm UNet (EfficientNet / ConvNeXt)
+- SegFormer
+- Swin + UPerNet
+- ConvNeXt V2 + UPerNet
 """
-import sdfi_dataset
-import utils.utils as sdfi_utils
-from fastcore.xtras import Path
-import rasterio
-import albumentations as A
-from fastai.callback.hook import summary
-from fastai.callback.progress import ProgressCallback
-from fastai.callback.schedule import lr_find, fit_flat_cos
-from fastai.callback.schedule import minimum, steep, slide, valley
-from fastai.data.block import DataBlock
-from fastai.data.external import untar_data, URLs
-from fastai.data.transforms import get_image_files, FuncSplitter, Normalize
-from fastai.layers import Mish
-from fastai.layers import  _get_norm
-from fastai.losses import BaseLoss
-from fastai.optimizer import ranger
-from fastai.torch_core import tensor
-from fastai.vision.augment import aug_transforms
-from fastai.vision.core import PILImage, PILMask
-from fastai.vision.data import ImageBlock, MaskBlock, imagenet_stats
-from fastai.vision.learner import unet_learner
-import torchvision.transforms as tfms
-from PIL import Image
-import numpy as np
+
+import os
 import sys
-from torch import nn
-from torchvision.models.resnet import resnet34
+import time
+import json
+import random
+import pathlib
+import argparse
+import numpy as np
 import torch
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
-import argparse
+from torch import nn
+
 from fastai.basics import *
-from fastai.callback.all import *
 from fastai.vision.all import *
-from fastai.vision import *
-import time
-import pathlib
-import shutil
-import utils.utils as sdfi_utils
-from wwf.vision.timm import *
+from fastai.callback.all import *
+from fastai.vision.learner import unet_learner
+from fastai.callback.schedule import minimum, steep, slide, valley
 from fastai.vision.all import GradientAccumulation
 
-from fastai.callback.core import Callback
+import utils.utils as sdfi_utils
+import sdfi_dataset
 
-from fastai.learner import Callback, CancelBatchException, CancelEpochException
+from wwf.vision.timm import timm_unet_learner
 
 
+# ---------------------------------------------------------------------
+# Determinism
+# ---------------------------------------------------------------------
 def make_deterministic():
-    print("making the training repeatable so that differetn runs easier can be compared to each other")
-    print("as part of this , num workersis set to 1")
-    # Set environment variables for deterministic behavior
+    print("Enabling deterministic training")
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     os.environ['PYTHONHASHSEED'] = '0'
-
-    # Set seeds for Python, NumPy, and PyTorch
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
-    torch.cuda.manual_seed(0)
     torch.cuda.manual_seed_all(0)
-
-    # Set PyTorch to use deterministic algorithms
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
-
+# ---------------------------------------------------------------------
+# CSV logger with LR
+# ---------------------------------------------------------------------
 class CSVLoggerWithLR(CSVLogger):
     def after_epoch(self):
-        # Get the current learning rates from the optimizer
-        current_lrs = [group['lr'] for group in self.learn.opt.param_groups]
+        lrs = [g['lr'] for g in self.learn.opt.param_groups]
+        log_values = self.learn.recorder.log + lrs
 
-        # Extend the log with learning rates
-        log_values = self.learn.recorder.log + current_lrs
-
-        # Ensure the header includes learning rate columns
-        if not hasattr(self, 'header_written') or not self.header_written:
-            lr_headers = [f'lr_{i}' for i in range(len(current_lrs))]
-            self.file.write(','.join(self.learn.recorder.metric_names + lr_headers) + '\n')
+        if not hasattr(self, 'header_written'):
+            self.file.write(','.join(self.learn.recorder.metric_names +
+                                     [f'lr_{i}' for i in range(len(lrs))]) + '\n')
             self.header_written = True
 
-        # Write the log values to the CSV file
         self.file.write(','.join(map(str, log_values)) + '\n')
         self.file.flush()
 
-class DoThingsAfterBatch(Callback):
-    """
-    Save model after n batch
-    """
 
+# ---------------------------------------------------------------------
+# Batch checkpoint callback
+# ---------------------------------------------------------------------
+class DoThingsAfterBatch(Callback):
+    """Save model after n batches"""
     def __init__(self, n_batch: int = 200_000):
-        """
-        :param n_batch: Save model after n batch in a epoc
-        """
         self.iter_string = "batch_string_NOT_set"
         self._modulus_faktor = n_batch
-
 
     def after_batch(self):
         if self._modulus_faktor < 2:
             return
         if self.iter % self._modulus_faktor == (self._modulus_faktor - 1):
-            print("Iter: {}of{}".format(self.iter, self.n_iter))
-            # save_name = self.experiment_settings_dict["job_name"]
-            self.iter_string = "Batch_model_{}_{}".format(self.epoch, self.iter)
+            print(f"Iter: {self.iter} of {self.n_iter}")
+            self.iter_string = f"Batch_model_{self.epoch}_{self.iter}"
             x_cpu = self.loss.cpu()
-            self.lr_string = "  loss={}".format(x_cpu.detach().numpy())
+            self.lr_string = f"  loss={x_cpu.detach().numpy()}"
             print("Batch save filename:" + self.iter_string + self.lr_string)
             self.learn.save(self.iter_string)
-            print("Batch model gemt!")
+            print("Batch model saved!")
 
 
-# Swin + UPerNet wrapper for fastai
+# ---------------------------------------------------------------------
+# Losses
+# ---------------------------------------------------------------------
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1.0, ignore_index=255):
+        super().__init__()
+        self.smooth = smooth
+        self.ignore_index = ignore_index
+
+    def forward(self, pred, target):
+        pred = F.softmax(pred, dim=1)
+        target = target.squeeze(1)
+        mask = target != self.ignore_index
+
+        num_classes = pred.shape[1]
+        target_oh = F.one_hot(target[mask], num_classes).permute(1, 0).float()
+        pred_flat = pred.permute(0, 2, 3, 1).reshape(-1, num_classes)[mask.reshape(-1)]
+
+        intersection = (pred_flat * target_oh).sum(0)
+        union = pred_flat.sum(0) + target_oh.sum(0)
+        dice = (2 * intersection + self.smooth) / (union + self.smooth)
+        return 1 - dice.mean()
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, ignore_index=255):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+
+    def forward(self, pred, target):
+        target = target.squeeze(1)
+        ce = F.cross_entropy(pred, target.long(), reduction='none',
+                             ignore_index=self.ignore_index)
+        pt = torch.exp(-ce)
+        return (self.alpha * (1 - pt) ** self.gamma * ce).mean()
+
+
+class CombinedLoss(nn.Module):
+    def __init__(self, ce_weight=0.5, dice_weight=0.5, ignore_index=255, class_weights=None):
+        super().__init__()
+        self.ce_weight = ce_weight
+        self.dice_weight = dice_weight
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index, weight=class_weights)
+        self.dice_loss = DiceLoss(ignore_index=ignore_index)
+
+    def forward(self, pred, target):
+        ce = self.ce_loss(pred, target.squeeze(1).long())
+        dice = self.dice_loss(pred, target)
+        return self.ce_weight * ce + self.dice_weight * dice
+
+
+# ---------------------------------------------------------------------
+# SegFormer wrapper
+# ---------------------------------------------------------------------
+class SegFormerWrapper(nn.Module):
+    """Wrapper for SegFormer models from transformers library"""
+    def __init__(self, model_name, num_classes, n_in=3, pretrained=True, ignore_index=255):
+        super().__init__()
+        try:
+            from transformers import SegformerForSemanticSegmentation, SegformerConfig
+        except ImportError:
+            raise ImportError("Please install transformers: pip install transformers")
+        
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        
+        if pretrained:
+            self.model = SegformerForSemanticSegmentation.from_pretrained(
+                model_name,
+                num_labels=num_classes,
+                ignore_mismatched_sizes=True
+            )
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+        else:
+            config = SegformerConfig.from_pretrained(model_name)
+            config.num_labels = num_classes
+            self.model = SegformerForSemanticSegmentation(config)
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+    
+    def _adapt_input_channels(self, n_in):
+        old_conv = self.model.segformer.encoder.patch_embeddings[0].proj
+        new_conv = nn.Conv2d(
+            n_in, 
+            old_conv.out_channels,
+            kernel_size=old_conv.kernel_size,
+            stride=old_conv.stride,
+            padding=old_conv.padding,
+            bias=old_conv.bias is not None
+        )
+        nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
+        if new_conv.bias is not None:
+            nn.init.constant_(new_conv.bias, 0)
+        if n_in >= 3 and old_conv.weight.shape[1] == 3:
+            with torch.no_grad():
+                new_conv.weight[:, :3] = old_conv.weight
+        self.model.segformer.encoder.patch_embeddings[0].proj = new_conv
+    
+    def forward(self, x):
+        outputs = self.model(pixel_values=x)
+        logits = outputs.logits
+        if logits.shape[-2:] != x.shape[-2:]:
+            logits = F.interpolate(
+                logits,
+                size=x.shape[-2:],
+                mode='bilinear',
+                align_corners=False
+            )
+        return logits
+
+
+# ---------------------------------------------------------------------
+# Swin + UPerNet wrapper
+# ---------------------------------------------------------------------
 class SwinUPerNetWrapper(nn.Module):
-    """
-    Wrapper for Swin Transformer + UPerNet from mmsegmentation/transformers
-    """
+    """Wrapper for Swin Transformer + UPerNet from transformers"""
     def __init__(self, model_name, num_classes, n_in=3, pretrained=True, ignore_index=255):
         super().__init__()
         try:
@@ -132,30 +220,22 @@ class SwinUPerNetWrapper(nn.Module):
         self.ignore_index = ignore_index
         
         if pretrained:
-            # Load pretrained Swin + UPerNet model
             self.model = AutoModelForSemanticSegmentation.from_pretrained(
                 model_name,
                 num_labels=num_classes,
                 ignore_mismatched_sizes=True
             )
-            
-            # If n_in != 3, adapt the first conv layer
             if n_in != 3:
                 self._adapt_input_channels(n_in)
         else:
-            # Create from config
             config = UperNetConfig.from_pretrained(model_name)
             config.num_labels = num_classes
             self.model = AutoModelForSemanticSegmentation(config)
-            
             if n_in != 3:
                 self._adapt_input_channels(n_in)
     
     def _adapt_input_channels(self, n_in):
-        """Adapt the first layer to accept n_in channels instead of 3"""
-        # For Swin, need to modify the patch embedding
         try:
-            # Try to access the backbone's patch embedding
             if hasattr(self.model, 'backbone'):
                 old_patch_embed = self.model.backbone.embeddings.patch_embeddings.projection
             elif hasattr(self.model, 'swin'):
@@ -177,12 +257,10 @@ class SwinUPerNetWrapper(nn.Module):
             if new_patch_embed.bias is not None:
                 nn.init.constant_(new_patch_embed.bias, 0)
             
-            # Copy weights for first 3 channels if expanding
             if n_in >= 3 and old_patch_embed.weight.shape[1] == 3:
                 with torch.no_grad():
                     new_patch_embed.weight[:, :3] = old_patch_embed.weight
             
-            # Replace the layer
             if hasattr(self.model, 'backbone'):
                 self.model.backbone.embeddings.patch_embeddings.projection = new_patch_embed
             elif hasattr(self.model, 'swin'):
@@ -193,8 +271,6 @@ class SwinUPerNetWrapper(nn.Module):
     def forward(self, x):
         outputs = self.model(pixel_values=x)
         logits = outputs.logits
-        
-        # Upsample to match input size
         if logits.shape[-2:] != x.shape[-2:]:
             logits = F.interpolate(
                 logits,
@@ -202,449 +278,164 @@ class SwinUPerNetWrapper(nn.Module):
                 mode='bilinear',
                 align_corners=False
             )
-        
         return logits
 
 
-# SegFormer model wrapper for fastai
-class SegFormerWrapper(nn.Module):
-    """
-    Wrapper for SegFormer models from transformers library to work with fastai
-    """
-    def __init__(self, model_name, num_classes, n_in=3, pretrained=True, ignore_index=255):
+# ---------------------------------------------------------------------
+# ConvNeXt V2 + UPerNet (mmseg)
+# ---------------------------------------------------------------------
+class ConvNeXtV2UPerNetWrapper(nn.Module):
+    """ConvNeXt V2 backbone + UPerNet decoder (mmseg-style)"""
+    def __init__(self, backbone_name, num_classes, n_in, pretrained=True):
         super().__init__()
         try:
-            from transformers import SegformerForSemanticSegmentation, SegformerConfig
+            from mmseg.models import build_segmentor
+            from mmcv import Config
         except ImportError:
-            raise ImportError("Please install transformers: pip install transformers")
-        
-        self.num_classes = num_classes
-        self.ignore_index = ignore_index
-        
-        if pretrained:
-            # Load pretrained model
-            self.model = SegformerForSemanticSegmentation.from_pretrained(
-                model_name,
-                num_labels=num_classes,
-                ignore_mismatched_sizes=True
+            raise ImportError(
+                "ConvNeXtV2+UPerNet requires mmsegmentation and mmcv"
             )
-            
-            # If n_in != 3, we need to adapt the first conv layer
-            if n_in != 3:
-                self._adapt_input_channels(n_in)
-        else:
-            # Create from config
-            config = SegformerConfig.from_pretrained(model_name)
-            config.num_labels = num_classes
-            self.model = SegformerForSemanticSegmentation(config)
-            
-            if n_in != 3:
-                self._adapt_input_channels(n_in)
-    
-    def _adapt_input_channels(self, n_in):
-        """Adapt the first convolution to accept n_in channels instead of 3"""
-        # SegFormer's first layer is in the patch embedding
-        old_conv = self.model.segformer.encoder.patch_embeddings[0].proj
-        
-        # Create new conv with n_in channels
-        new_conv = nn.Conv2d(
-            n_in, 
-            old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            bias=old_conv.bias is not None
-        )
-        
-        # Initialize new conv
-        nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
-        if new_conv.bias is not None:
-            nn.init.constant_(new_conv.bias, 0)
-        
-        # If pretrained and expanding channels, copy weights for first 3 channels
-        if n_in >= 3 and old_conv.weight.shape[1] == 3:
-            with torch.no_grad():
-                new_conv.weight[:, :3] = old_conv.weight
-        
-        # Replace the conv layer
-        self.model.segformer.encoder.patch_embeddings[0].proj = new_conv
-    
+
+        arch = backbone_name.replace("convnextv2_", "")
+
+        cfg = Config(dict(
+            model=dict(
+                type='EncoderDecoder',
+                backbone=dict(
+                    type='ConvNeXt',
+                    arch=arch,
+                    in_chans=n_in,
+                    drop_path_rate=0.3,
+                    out_indices=(0, 1, 2, 3),
+                    pretrained=pretrained,
+                    gap_before_final_norm=False,
+                ),
+                decode_head=dict(
+                    type='UPerHead',
+                    in_channels=[96, 192, 384, 768],
+                    in_index=[0, 1, 2, 3],
+                    pool_scales=(1, 2, 3, 6),
+                    channels=512,
+                    num_classes=num_classes,
+                    dropout_ratio=0.1,
+                    align_corners=False,
+                ),
+                auxiliary_head=dict(
+                    type='FCNHead',
+                    in_channels=384,
+                    channels=256,
+                    num_classes=num_classes,
+                    dropout_ratio=0.1,
+                ),
+                test_cfg=dict(mode='whole'),
+            )
+        ))
+
+        self.model = build_segmentor(cfg.model)
+
     def forward(self, x):
-        # SegFormer expects input in NCHW format and returns logits
-        outputs = self.model(pixel_values=x)
-        logits = outputs.logits
+        out = self.model.encode_decode(x, None)
+        if out.shape[-2:] != x.shape[-2:]:
+            out = F.interpolate(out, size=x.shape[-2:],
+                                mode='bilinear', align_corners=False)
+        return out
+
+
+# ---------------------------------------------------------------------
+# Training class
+# ---------------------------------------------------------------------
+class BasicTrainingFastai2:
+    def __init__(self, cfg, dls):
+        self.cfg = cfg
+        self.learn = self._build_learner(cfg, dls)
+
+    def _num_classes(self):
+        """Get number of classes from config or codes file"""
+        if "num_classes" in self.cfg:
+            return self.cfg["num_classes"]
+        if "n_classes" in self.cfg:
+            return self.cfg["n_classes"]
+        if "path_to_codes" in self.cfg:
+            with open(self.cfg["path_to_codes"]) as f:
+                class_names = [l.strip() for l in f if l.strip()]
+                print(f"Loaded {len(class_names)} classes from codes file: {class_names}")
+                return len(class_names)
+        return None
+
+    def _loss(self):
+        """Create loss function based on config"""
+        ignore = int(self.cfg.get("ignore_index", 255))
+        lt = self.cfg.get("loss_function", "cross_entropy")
         
-        # Upsample logits to match input size if needed
-        if logits.shape[-2:] != x.shape[-2:]:
-            logits = F.interpolate(
-                logits,
-                size=x.shape[-2:],
-                mode='bilinear',
-                align_corners=False
-            )
-        
-        return logits
+        weights = None
+        if "class_weights" in self.cfg and self.cfg["class_weights"]:
+            weights = torch.tensor(self.cfg["class_weights"]).cuda()
+            print(f"Using class weights: {self.cfg['class_weights']}")
 
+        if lt == "dice":
+            return DiceLoss(ignore_index=ignore)
+        if lt == "focal":
+            return FocalLoss(ignore_index=ignore)
+        if lt == "combined":
+            return CombinedLoss(ignore_index=ignore, class_weights=weights)
 
-def create_swin_upernet_learner(dls, model_name, loss_func, metrics, wd=1e-2,
-                                path='.', model_dir='models', n_in=3,
-                                num_classes=None, pretrained=True, ignore_index=255):
-    """
-    Create a fastai learner with Swin + UPerNet model
-    """
-    if num_classes is None:
-        if hasattr(dls, 'c'):
-            num_classes = dls.c
-        elif hasattr(dls, 'vocab'):
-            num_classes = len(dls.vocab)
-        elif hasattr(dls.train, 'c'):
-            num_classes = dls.train.c
-        else:
-            raise ValueError("Could not infer number of classes from DataLoaders. Please provide num_classes explicitly.")
-    
-    model = SwinUPerNetWrapper(
-        model_name=model_name,
-        num_classes=num_classes,
-        n_in=n_in,
-        pretrained=pretrained,
-        ignore_index=ignore_index
-    )
-    
-    learn = Learner(
-        dls=dls,
-        model=model,
-        loss_func=loss_func,
-        metrics=metrics,
-        wd=wd,
-        path=path,
-        model_dir=model_dir
-    )
-    
-    return learn
+        print(f"Using CrossEntropyLoss with ignore_index={ignore}")
+        return CrossEntropyLossFlat(axis=1, ignore_index=ignore, weight=weights)
 
-
-def create_segformer_learner(dls, model_name, loss_func, metrics, wd=1e-2, 
-                             path='.', model_dir='models', n_in=3, 
-                             num_classes=None, pretrained=True, ignore_index=255):
-    """
-    Create a fastai learner with SegFormer model
-    
-    Args:
-        dls: fastai DataLoaders
-        model_name: SegFormer model name (e.g., 'nvidia/segformer-b0-finetuned-ade-512-512')
-        loss_func: Loss function
-        metrics: Metrics to track
-        wd: Weight decay
-        path: Path for logs
-        model_dir: Directory for saving models
-        n_in: Number of input channels
-        num_classes: Number of output classes (inferred from dls if None)
-        pretrained: Whether to use pretrained weights
-        ignore_index: Index to ignore in loss calculation
-    """
-    if num_classes is None:
-        # Try different ways to get number of classes from DataLoaders
-        if hasattr(dls, 'c'):
-            num_classes = dls.c
-        elif hasattr(dls, 'vocab'):
-            num_classes = len(dls.vocab)
-        elif hasattr(dls.train, 'c'):
-            num_classes = dls.train.c
-        else:
-            raise ValueError("Could not infer number of classes from DataLoaders. Please provide num_classes explicitly.")
-    
-    # Create the SegFormer model
-    model = SegFormerWrapper(
-        model_name=model_name,
-        num_classes=num_classes,
-        n_in=n_in,
-        pretrained=pretrained,
-        ignore_index=ignore_index
-    )
-    
-    # Create the learner
-    learn = Learner(
-        dls=dls,
-        model=model,
-        loss_func=loss_func,
-        metrics=metrics,
-        wd=wd,
-        path=path,
-        model_dir=model_dir
-    )
-    
-    return learn
-
-
-# Additional loss functions for ensemble diversity
-class DiceLoss(nn.Module):
-    """
-    Dice Loss for semantic segmentation
-    """
-    def __init__(self, smooth=1.0, ignore_index=255):
-        super().__init__()
-        self.smooth = smooth
-        self.ignore_index = ignore_index
-    
-    def forward(self, pred, target):
-        # Get predictions
-        pred = F.softmax(pred, dim=1)
-        
-        # Flatten and handle ignore_index
-        target = target.squeeze(1)
-        mask = (target != self.ignore_index)
-        
-        # One-hot encode target
-        num_classes = pred.shape[1]
-        target_one_hot = F.one_hot(target[mask], num_classes).permute(1, 0).float()
-        pred_flat = pred.permute(0, 2, 3, 1).reshape(-1, num_classes)[mask.reshape(-1)]
-        
-        # Calculate Dice
-        intersection = (pred_flat * target_one_hot).sum(0)
-        union = pred_flat.sum(0) + target_one_hot.sum(0)
-        dice = (2. * intersection + self.smooth) / (union + self.smooth)
-        
-        return 1 - dice.mean()
-
-
-class FocalLoss(nn.Module):
-    """
-    Focal Loss for addressing class imbalance
-    """
-    def __init__(self, alpha=0.25, gamma=2.0, ignore_index=255):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.ignore_index = ignore_index
-    
-    def forward(self, pred, target):
-        target = target.squeeze(1)
-        ce_loss = F.cross_entropy(pred, target, reduction='none', ignore_index=self.ignore_index)
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
-        
-        return focal_loss.mean()
-
-
-class CombinedLoss(nn.Module):
-    """
-    Combination of Cross Entropy and Dice Loss
-    """
-    def __init__(self, ce_weight=0.5, dice_weight=0.5, ignore_index=255, class_weights=None):
-        super().__init__()
-        self.ce_weight = ce_weight
-        self.dice_weight = dice_weight
-        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index, weight=class_weights)
-        self.dice_loss = DiceLoss(ignore_index=ignore_index)
-    
-    def forward(self, pred, target):
-        ce = self.ce_loss(pred, target.squeeze(1).long())
-        dice = self.dice_loss(pred, target)
-        return self.ce_weight * ce + self.dice_weight * dice
-
-
-class basic_traininFastai2:
-    def __init__(self,experiment_settings_dict,dls):
-        """
-        :param experiment_settings_dict: a dictionary holding the parameters for the training
-        :param dls: a dataloader feed to the unet learner
-        """
-        self.experiment_settings_dict =experiment_settings_dict
-        self.learn = self.get_basic_training(experiment_settings_dict,dls)
-
-    def find_learning_rate(self,show_images):
-        """
-        :param show_images: boolen that decides if the plot should be shown to the user
-        :return: the Lr suitable for model and dataset (OBS. should be multiplied with e.g 15 in order to fit with fit_one_cykle )
-        """
-        lrs = self.learn.lr_find(suggest_funcs=(minimum, steep, valley, slide))
-        lr_min, lr_steep, lr_slide, lr_valley = self.learn.lr_find(suggest_funcs=(minimum, steep, slide, valley))
-        print("lr_min:"+ str(lr_min))
-        print("lr_steep:" + str(lr_steep))
-        print("lr_slide:" + str(lr_slide))
-        print("lr_valley:" + str(lr_valley)) #recomended in https://forums.fast.ai/t/new-lr-finder-output/89236/3
-        if show_images:
-            print("exit the graph to continue")
-            plt.show()
-        print("use lr_valley as learningrate:" + str(lr_valley))
-
-        return lr_valley
-
-    
-    def create_folders(self):
-        """
-        create folders needed to save models and logs
-        """
-        #make sure the path/to/folder that the model should be saved in exists
-
-        pathlib.Path(self.experiment_settings_dict["model_folder"]).mkdir(parents=True, exist_ok=True)
-        #make sure the path/to/folder that the model should be saved in exists
-        pathlib.Path(self.experiment_settings_dict["log_folder"]).mkdir(parents=True, exist_ok=True)
-
-
-
-
-    def train(self,lr_max):
-        """
-        :param lr_max: the max learningrate that the fit_one_cyckle will cykle towards and back from.
-        #if fixedlearning rate is used, lr_max will be used for the complete training
-        :return: None
-
-        Trains a model on a dataset
-        """
-        self.create_folders()
-
-        
-        
-        
-        if self.experiment_settings_dict["model_to_load"]:
-            print("loading :"+str(self.experiment_settings_dict["model_to_load"]))    
-            #load save weights
-            self.learn.load(str(self.experiment_settings_dict["model_to_load"]).rstrip(".pth"))
-        else:
-            print("no model to load..")    
-
-        
-        if "save_on_batch_iter_modulus_n" in self.experiment_settings_dict:
-            n_batch = self.experiment_settings_dict["save_on_batch_iter_modulus_n"]
-        else:
-            n_batch = 0
-
-        if self.experiment_settings_dict["freeze"]:
-            self.learn.freeze()
-        else:
-            self.learn.unfreeze()
-        #IN order to monitor the acuracy we might have to modifie the learner as they talk about here https://forums.fast.ai/t/equivalent-of-add-metrics-in-fastai2/77575/2
-        #In order to skip to a a certain epoch before training (and get the Lr of the apropriate part of the LR-scedule we ad a skip_to_epoch callback)
-        #If you get problems with nan in training loss it might be a good idea to ad 'GradientClip(0.1)' to the csbs list
-        if self.experiment_settings_dict["last_epoch"]>0:
-            start_epoch=self.experiment_settings_dict["last_epoch"]+1
-        else:
-            start_epoch =0
-
-
-        if self.experiment_settings_dict["sceduler"] =="fit_one_cycle":
-            self.learn.fit_one_cycle(n_epoch=self.experiment_settings_dict["epochs"],start_epoch=start_epoch, lr_max=lr_max,
-                                     cbs=[GradientAccumulation(self.experiment_settings_dict["n_acc"]),GradientClip(self.experiment_settings_dict["gradient_clip"]),SaveModelCallback(with_opt=True,every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
-                                          CSVLoggerWithLR(fname= self.experiment_settings_dict["job_name"]+".csv", append=True),
-                                          DoThingsAfterBatch(n_batch=n_batch)
-                                          ])
-        elif self.experiment_settings_dict["sceduler"] =="fixed":
-            self.learn.fit(n_epoch=self.experiment_settings_dict["epochs"],start_epoch=start_epoch, lr=lr_max,
-                           cbs=[SaveModelCallback(with_opt=True,every_epoch= True, monitor='valid_loss', fname=self.experiment_settings_dict["job_name"]),
-                                CSVLogger(fname= self.experiment_settings_dict["job_name"]+".csv", append=True),
-                                DoThingsAfterBatch(n_batch=n_batch)
-                                ])
-        else:
-            sys.exit("no valid learning rate sceduler!")
-
-
-
-        print("saving model")
-        self.learn.save(self.experiment_settings_dict["job_name"])
-
-
-
-
-    def get_basic_training(self,experiment_settings_dict,dls):
-        """
-        :param experiment_settings_dict: a dictionary holding the parameters for the training
-        :param dls: a dataloader feed to the unet learner
-        :return: a unet learner that use data from the dataloader
-        """
-        if "ignore_index" in experiment_settings_dict:
-            ignore_index = int(experiment_settings_dict["ignore_index"])
-        else:
-            ignore_index=255
-        print("USING ignore index :"+str(ignore_index))
-
-        
-        
-        def valid_accuracy(inp, targ):
-            """
-            valid_accuracy runs after epoch, calculating the accuracy on the validationset
-            Dokumentation that shows that the metrics per default is computed only on the validationset can be ound here: https://docs.fast.ai/learner.html#Learner
-            """
+    def _metric(self, ignore):
+        """Create accuracy metric that respects ignore_index"""
+        def acc(inp, targ):
             targ = targ.squeeze(1)
-            
-            void_code=ignore_index #use a code that does not exist in the dataset
-            #print("void sum:"+str((targ == void_code).sum()))
-            #the masked target is the same as the target (we dont use 'dont care labels')
-            mask = targ != void_code
-            #print("input:"+str(inp))
-            #print("targ:"+str(targ[])) 
-            return (inp.argmax(dim=1)[mask] == targ[mask]).float().mean()
+            mask = targ != ignore
+            return (inp.argmax(1)[mask] == targ[mask]).float().mean()
+        return acc
 
-        
-        # Setup loss function based on configuration
-        loss_type = experiment_settings_dict.get("loss_function", "cross_entropy")
-        
-        if "class_weights" in experiment_settings_dict and experiment_settings_dict["class_weights"]:
-            weights = torch.tensor(experiment_settings_dict["class_weights"]).cuda()
-            print("Using class weights: {}".format(experiment_settings_dict["class_weights"]))
-        else:
-            weights = None
-            print("weighting all classes equally!")
-        
-        # Create appropriate loss function
-        if loss_type == "cross_entropy":
-            a_loss_func = CrossEntropyLossFlat(axis=1, ignore_index=ignore_index, weight=weights)
-        elif loss_type == "dice":
-            a_loss_func = DiceLoss(ignore_index=ignore_index)
-        elif loss_type == "focal":
-            a_loss_func = FocalLoss(ignore_index=ignore_index)
-        elif loss_type == "combined":
-            # Combined CE + Dice
-            a_loss_func = CombinedLoss(ignore_index=ignore_index, class_weights=weights)
-        else:
-            print(f"Warning: Unknown loss function '{loss_type}', defaulting to cross_entropy")
-            a_loss_func = CrossEntropyLossFlat(axis=1, ignore_index=ignore_index, weight=weights)
-        
-        print(f"Using loss function: {loss_type}")
+    def _build_learner(self, cfg, dls):
+        """Build the appropriate learner based on model type"""
+        ignore = int(cfg.get("ignore_index", 255))
+        loss_func = self._loss()
+        metric = self._metric(ignore)
+        model_id = cfg["model"]
 
-        # Check if using Swin + UPerNet
-        value = self.experiment_settings_dict["model"]
-        is_swin_upernet = isinstance(value, str) and "swin" in value.lower() and "upernet" in value.lower()
-        is_segformer = isinstance(value, str) and value.startswith("segformer")
-        
-        if is_swin_upernet:
-            print("Building Swin + UPerNet learner...")
-            
-            # Map model names to HuggingFace IDs
+        # ConvNeXt V2 + UPerNet
+        if isinstance(model_id, str) and model_id.endswith("_upernet"):
+            print("Building ConvNeXt V2 + UPerNet")
+            model = ConvNeXtV2UPerNetWrapper(
+                backbone_name=model_id.replace("_upernet", ""),
+                num_classes=self._num_classes(),
+                n_in=len(cfg["means"]),
+                pretrained=cfg.get("pretrained", True),
+            )
+            learn = Learner(
+                dls, model, loss_func=loss_func, metrics=metric,
+                path=cfg["log_folder"], model_dir=cfg["model_folder"]
+            )
+
+        # Swin + UPerNet
+        elif isinstance(model_id, str) and "swin" in model_id.lower() and "upernet" in model_id.lower():
+            print("Building Swin + UPerNet")
             swin_models = {
                 "swin-small-upernet": "openmmlab/upernet-swin-small",
                 "swin-base-upernet": "openmmlab/upernet-swin-base",
                 "swin-large-upernet": "openmmlab/upernet-swin-large",
             }
+            model_name = swin_models.get(model_id.lower(), model_id)
             
-            model_name = swin_models.get(
-                self.experiment_settings_dict["model"].lower(),
-                self.experiment_settings_dict["model"]
-            )
-            
-            pretrained = experiment_settings_dict.get("pretrained", True)
-            
-            # Get number of classes
-            num_classes = self._get_num_classes(experiment_settings_dict)
-            
-            learn = create_swin_upernet_learner(
-                dls=dls,
+            model = SwinUPerNetWrapper(
                 model_name=model_name,
-                loss_func=a_loss_func,
-                metrics=valid_accuracy,
-                wd=1e-2,
-                path=self.experiment_settings_dict["log_folder"],
-                model_dir=self.experiment_settings_dict["model_folder"],
-                n_in=len(experiment_settings_dict["means"]),
-                num_classes=num_classes,
-                pretrained=pretrained,
-                ignore_index=ignore_index
+                num_classes=self._num_classes(),
+                n_in=len(cfg["means"]),
+                pretrained=cfg.get("pretrained", True),
+                ignore_index=ignore
             )
-            
-        elif is_segformer:
-            print("Building SegFormer learner...")
-            
-            # Map common SegFormer model names to HuggingFace model IDs
+            learn = Learner(
+                dls, model, loss_func=loss_func, metrics=metric,
+                path=cfg["log_folder"], model_dir=cfg["model_folder"]
+            )
+
+        # SegFormer
+        elif isinstance(model_id, str) and model_id.startswith("segformer"):
+            print("Building SegFormer")
             segformer_models = {
                 "segformer-b0": "nvidia/segformer-b0-finetuned-ade-512-512",
                 "segformer-b1": "nvidia/segformer-b1-finetuned-ade-512-512",
@@ -653,164 +444,202 @@ class basic_traininFastai2:
                 "segformer-b4": "nvidia/segformer-b4-finetuned-ade-512-512",
                 "segformer-b5": "nvidia/segformer-b5-finetuned-ade-640-640",
             }
+            model_name = segformer_models.get(model_id, model_id)
             
-            model_name = segformer_models.get(
-                self.experiment_settings_dict["model"], 
-                self.experiment_settings_dict["model"]
-            )
-            
-            pretrained = experiment_settings_dict.get("pretrained", True)
-            num_classes = self._get_num_classes(experiment_settings_dict)
-            
-            learn = create_segformer_learner(
-                dls=dls,
+            model = SegFormerWrapper(
                 model_name=model_name,
-                loss_func=a_loss_func,
-                metrics=valid_accuracy,
-                wd=1e-2,
-                path=self.experiment_settings_dict["log_folder"],
-                model_dir=self.experiment_settings_dict["model_folder"],
-                n_in=len(experiment_settings_dict["means"]),
-                num_classes=num_classes,
-                pretrained=pretrained,
-                ignore_index=ignore_index
+                num_classes=self._num_classes(),
+                n_in=len(cfg["means"]),
+                pretrained=cfg.get("pretrained", True),
+                ignore_index=ignore
             )
-            
-        elif "bottleneck" in self.experiment_settings_dict or  self.experiment_settings_dict["model"] in ["efficientnetv1_m","efficientnetv2_m","efficientnetv2_l","efficientnetv2_rw_s.ra2_in1k","efficientnetv2_rw_m.agc_in1k","tf_efficientnetv2_l.in21k","tf_efficientnetv2_xl.in21k"]:
-            #using a timm_learner from the wwf library (walk faster with fastai)
-            print("building tim based unet learner with wwtf library...")
+            learn = Learner(
+                dls, model, loss_func=loss_func, metrics=metric,
+                path=cfg["log_folder"], model_dir=cfg["model_folder"]
+            )
 
-            pretrained=True
+        # timm UNet (EfficientNet, etc.)
+        elif isinstance(model_id, str) and ("efficientnet" in model_id or "bottleneck" in cfg):
+            print("Building timm UNet")
+            learn = timm_unet_learner(
+                dls, model_id,
+                loss_func=loss_func,
+                metrics=metric,
+                n_in=len(cfg["means"]),
+                bottleneck=cfg.get("bottleneck"),
+                pretrained=cfg.get("pretrained", True),
+                path=cfg["log_folder"],
+                model_dir=cfg["model_folder"]
+            )
 
-
-            learn = timm_unet_learner(dls, self.experiment_settings_dict["model"], loss_func=a_loss_func,metrics=valid_accuracy,bottleneck=experiment_settings_dict["bottleneck"], wd=1e-2,
-                             path= self.experiment_settings_dict["log_folder"],pretrained=pretrained,
-                             model_dir=self.experiment_settings_dict["model_folder"] ,n_in=len(experiment_settings_dict["means"]))#callback_fns=[partial(CSVLogger, filename= experiment_settings_dict["job_name"], append=True)])
+        # fastai UNet (ResNet, etc.)
         else:
-            # fastai asumes 'model_dir' to be a path that is relative to 'path'. In order to make model_dir independent of 'path' we need to make the model_dir path absolute with 'resolve()' first.
-            learn = unet_learner(dls, self.experiment_settings_dict["model"], loss_func=a_loss_func,metrics=valid_accuracy, wd=1e-2,
-                             path= self.experiment_settings_dict["log_folder"],
-                             model_dir=self.experiment_settings_dict["model_folder"] ,n_in=len(experiment_settings_dict["means"]))#callback_fns=[partial(CSVLogger, filename= experiment_settings_dict["job_name"], append=True)])
+            print("Building fastai UNet")
+            learn = unet_learner(
+                dls, model_id,
+                loss_func=loss_func,
+                metrics=metric,
+                n_in=len(cfg["means"]),
+                path=cfg["log_folder"],
+                model_dir=cfg["model_folder"]
+            )
+
+        return learn.to_fp16() if cfg.get("to_fp16", False) else learn
+
+    def find_learning_rate(self, show_images=False):
+        """Find optimal learning rate"""
+        lr_min, lr_steep, lr_slide, lr_valley = self.learn.lr_find(
+            suggest_funcs=(minimum, steep, slide, valley)
+        )
+        print(f"lr_min: {lr_min}")
+        print(f"lr_steep: {lr_steep}")
+        print(f"lr_slide: {lr_slide}")
+        print(f"lr_valley: {lr_valley}")
         
-        if self.experiment_settings_dict["to_fp16"]:
-            print("training with mixed precision")
-            return learn.to_fp16()
+        if show_images:
+            print("Exit the graph to continue")
+            import matplotlib.pyplot as plt
+            plt.show()
+        
+        print(f"Using lr_valley as learning rate: {lr_valley}")
+        return lr_valley
+
+    def create_folders(self):
+        """Create folders for models and logs"""
+        pathlib.Path(self.cfg["model_folder"]).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(self.cfg["log_folder"]).mkdir(parents=True, exist_ok=True)
+
+    def train(self, lr):
+        """Train the model"""
+        self.create_folders()
+        
+        # Load pretrained weights if specified
+        if self.cfg.get("model_to_load"):
+            print(f"Loading: {self.cfg['model_to_load']}")
+            self.learn.load(str(self.cfg["model_to_load"]).rstrip(".pth"))
+        
+        # Freeze/unfreeze
+        if self.cfg.get("freeze", False):
+            self.learn.freeze()
         else:
-            print("not training with mixed precision!!")
-            return learn
+            self.learn.unfreeze()
+        
+        # Setup callbacks
+        n_batch = self.cfg.get("save_on_batch_iter_modulus_n", 0)
+        start_epoch = self.cfg.get("last_epoch", -1) + 1
+        
+        cbs = [
+            GradientAccumulation(self.cfg.get("n_acc", 1)),
+            GradientClip(self.cfg.get("gradient_clip", 1.0)),
+            SaveModelCallback(
+                monitor='valid_loss',
+                fname=self.cfg["job_name"],
+                every_epoch=True,
+                with_opt=True
+            ),
+            CSVLoggerWithLR(fname=self.cfg["job_name"] + ".csv", append=True),
+        ]
+        
+        if n_batch > 0:
+            cbs.append(DoThingsAfterBatch(n_batch=n_batch))
+        
+        # Train with appropriate scheduler
+        scheduler = self.cfg.get("scheduler", "fit_one_cycle")
+        
+        if scheduler == "fit_one_cycle":
+            self.learn.fit_one_cycle(
+                n_epoch=self.cfg["epochs"],
+                start_epoch=start_epoch,
+                lr_max=lr,
+                cbs=cbs
+            )
+        elif scheduler == "fixed":
+            self.learn.fit(
+                n_epoch=self.cfg["epochs"],
+                start_epoch=start_epoch,
+                lr=lr,
+                cbs=cbs
+            )
+        else:
+            sys.exit(f"Unknown scheduler: {scheduler}")
+        
+        # Save final model
+        print("Saving model")
+        self.learn.save(self.cfg["job_name"])
+
+
+# ---------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------
+def train_experiment(cfg):
+    """Run a training experiment"""
+    dls = sdfi_dataset.get_dataset(cfg)
+    trainer = BasicTrainingFastai2(cfg, dls)
     
-    def _get_num_classes(self, experiment_settings_dict):
-        """Helper method to get number of classes from various sources"""
-        num_classes = None
-        if "num_classes" in experiment_settings_dict:
-            num_classes = experiment_settings_dict["num_classes"]
-        elif "n_classes" in experiment_settings_dict:
-            num_classes = experiment_settings_dict["n_classes"]
-        elif "path_to_codes" in experiment_settings_dict:
-            # Load number of classes from codes.txt file
-            codes_path = experiment_settings_dict["path_to_codes"]
-            try:
-                with open(codes_path, 'r') as f:
-                    class_names = [line.strip() for line in f.readlines() if line.strip()]
-                num_classes = len(class_names)
-                print(f"Loaded {num_classes} classes from {codes_path}: {class_names}")
-            except Exception as e:
-                print(f"Warning: Could not read codes file from {codes_path}: {e}")
-        return num_classes
-
-
-def train(experiment_settings_dict):
-    """
-    :param experiment_settings_dict: a dictionary holding the parameters for the training
-    :return: None
-
-    1.loads a dataset
-    2.configures a unet-training
-    3.sets a learningrate 
-    4.ev loads pretrained model-weights
-    4.trains
-    """
-    run_on_cpu = False
-    if run_on_cpu:
-        defaults.device = torch.device('cpu')
-
-    print("loading the dataset..")
-    dls = sdfi_dataset.get_dataset(experiment_settings_dict)
-
-    print("setting up a unet training..")
-    training= basic_traininFastai2(experiment_settings_dict,dls)
-
-    if "lr" in experiment_settings_dict:
-        max_lr = experiment_settings_dict["lr"]
-        print("using predefined max learning rate :"+str(max_lr))
-        
+    # Determine learning rate
+    if "lr" in cfg:
+        max_lr = cfg["lr"]
+        print(f"Using predefined max learning rate: {max_lr}")
     else:
         print("Finding learning rate...")
-        lr_valley= training.find_learning_rate(show_images=False)
-
-        if experiment_settings_dict["sceduler"] == "fit_one_cycle":
-            multiply_with=30
-            print("multiplying lr_valley with " + str(multiply_with) + "to get a max_lr value compatible with fit_one_cycle")
-            max_lr = lr_valley*multiply_with
-
-        elif experiment_settings_dict["sceduler"] == "fixed":
-            print("using lr_valley as it is as learning rate when training with fixed learning rate (scedule = 'fixed' == no lr scedule)")
-            max_lr = lr_valley
+        lr_valley = trainer.find_learning_rate(show_images=False)
+        
+        if cfg.get("scheduler", "fit_one_cycle") == "fit_one_cycle":
+            multiply_with = 30
+            print(f"Multiplying lr_valley by {multiply_with} for fit_one_cycle")
+            max_lr = lr_valley * multiply_with
         else:
-            sys.exit("'sceduler' should be 'fit_one_cycle' or 'fixed'")
-        #store the found lr in the dictionary so we can save it to .json file in the log folder
-        experiment_settings_dict["lr_finder_lr"] = max_lr
-
-    print("max_lr:"+str(max_lr))
-
-
-    print("run the training..")
-    print("job_name: " + experiment_settings_dict["job_name"])
-
-    training.train(lr_max=max_lr)
-
-    print("TRAINING DONE! job_name: " + experiment_settings_dict["job_name"])
-    sdfi_utils.save_dictionary_to_disk(experiment_settings_dict)
+            max_lr = lr_valley
+        
+        cfg["lr_finder_lr"] = max_lr
+    
+    print(f"max_lr: {max_lr}")
+    print(f"job_name: {cfg['job_name']}")
+    
+    trainer.train(max_lr)
+    
+    print(f"TRAINING DONE! job_name: {cfg['job_name']}")
+    sdfi_utils.save_dictionary_to_disk(cfg)
 
 
-def infer_model_and_log_folders(experiment_settings_dict):
-    """
-    :param experiment_settings_dict: a dictionary holding the parameters for the training
-    :return: None
-
-    creates 'model_folder' and 'log_folder' entries in the dictionary based on the value for 'experiment_root' and 'job_name'
-    """
-    # fastai asumes 'model_folder' to be a path that is relative to 'log_folder'. In order to make it relative to the location the script is run from we need to make it absolute with 'resolve()' first.
-    experiment_settings_dict['model_folder']=( Path(experiment_settings_dict['experiment_root'])/Path(experiment_settings_dict['job_name'])/Path("models") ).resolve()
-    experiment_settings_dict['log_folder']=(Path(experiment_settings_dict['experiment_root'])/Path(experiment_settings_dict['job_name'])/Path("logs")).resolve()
-   
+def infer_model_and_log_folders(cfg):
+    """Create model_folder and log_folder paths"""
+    cfg['model_folder'] = (
+        Path(cfg['experiment_root']) / 
+        Path(cfg['job_name']) / 
+        Path("models")
+    ).resolve()
+    cfg['log_folder'] = (
+        Path(cfg['experiment_root']) / 
+        Path(cfg['job_name']) / 
+        Path("logs")
+    ).resolve()
 
 
 if __name__ == "__main__":
-    """
-    Given one or more config-files that defines a training,
-    Trains a model on a dataset.
+    usage_example = (
+        "Example usage:\n"
+        "python train.py --config configs/example_configs/train_example_dataset.ini\n"
+        "To use another GPU: CUDA_VISIBLE_DEVICES=1 python train.py --config ...\n"
+    )
     
-    
-    """
-    usage_example="example usage: \n "+r"python train.py --config configs/example_configs/train_example_dataset.ini \n to use anotehr GPU than 0 call it like this \n CUDA_VISIBLE_DEVICES= python train.py   "
-    # Initialize parser
     parser = argparse.ArgumentParser(
-                                    epilog=usage_example,
-                                    formatter_class=argparse.RawDescriptionHelpFormatter)
-
-
-    parser.add_argument("-c", "--config", help="one or more paths to experiment config file",nargs ='+',required=True)
-    parser.add_argument('--deterministic', action='store_true', help='tries to make different trainings comparable and repeatable')
-
+        epilog=usage_example,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("-c", "--config", nargs="+", required=True,
+                        help="One or more paths to experiment config files")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Enable deterministic training for reproducibility")
+    
     args = parser.parse_args()
 
-
-    for config_file_path in args.config:
-        experiment_settings_dict= sdfi_utils.load_settings_from_config_file(config_file_path)
+    for cfg_path in args.config:
+        cfg = sdfi_utils.load_settings_from_config_file(cfg_path)
+        
         if args.deterministic:
-            experiment_settings_dict["num_workers"]= 1
+            cfg["num_workers"] = 1
             make_deterministic()
-
-        infer_model_and_log_folders(experiment_settings_dict)
-        train(experiment_settings_dict=experiment_settings_dict)
+        
+        infer_model_and_log_folders(cfg)
+        train_experiment(cfg)

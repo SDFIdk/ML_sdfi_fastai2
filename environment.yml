@@ -1,24 +1,45 @@
 name: ML_sdfi
 channels:
-  - fastai
   - pytorch
   - nvidia
   - conda-forge
+
 dependencies:
   - python=3.10
-  - fastai
-  - pytorch
+
+  # ---- CUDA-enabled PyTorch (conda only) ----
+  - pytorch=2.2.*
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+
+  # ---- Geospatial stack ----
   - geopandas
   - gdal
   - fiona
-  - psutil
   - rasterio
-  - torchvision
-  - pytorch-cuda=12.1
+
+  # ---- General utilities ----
+  - psutil
+  - ipython
+  - jupyter
+  - matplotlib
+
+  # ---- pip (used only for pure-Python packages) ----
   - pip
+
   - pip:
+      # fastai via pip, but NEVER allowed to resolve torch
+      - fastai>=2.7.14 --no-deps
+
+      # project-specific packages
       - git+https://github.com/rasmuspjohansson/albumentations-multi-channels
       - git+https://github.com/walkwithfastai/walkwithfastai.github.io
       - git+https://github.com/SDFIdk/multi_channel_dataset_creation.git
+
+      # misc
       - psycopg2-binary
       - reportlab
+      - transformers
+      - safetensors
+

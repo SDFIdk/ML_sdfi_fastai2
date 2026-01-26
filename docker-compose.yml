@@ -1,0 +1,28 @@
+services:
+  dev-env:
+    build: .
+    container_name: geospatial_dev
+    # Use the host's shared memory to avoid Bus Errors with large tensors
+    ipc: host
+    # Or set a specific high limit if you prefer isolation (e.g., '64gb')
+    # shm_size: '64gb'
+    volumes:
+      - .:/workspace
+      - /mnt/T/mnt/:/mnt/T/mnt/
+      - /home/rajoh/projects:/home/projects
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+

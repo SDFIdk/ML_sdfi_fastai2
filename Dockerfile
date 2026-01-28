@@ -7,11 +7,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CPLUS_INCLUDE_PATH=/usr/include/gdal \
     C_INCLUDE_PATH=/usr/include/gdal
 
-# System Dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdal-bin libgdal-dev libspatialindex-dev git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+
+#dynamically queries the version of the system library (libgdal) and forces pip to install the exact matching Python bindings version.
+RUN export GDAL_VERSION=$(gdal-config --version) && \
+    pip install --no-cache-dir "gdal==$GDAL_VERSION.*"
 # Updated fastai to 2.7.17 and mmcv to >=2.2.0 for PyTorch 2.4 compatibility 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir fastai==2.7.17 transformers safetensors openmim && \

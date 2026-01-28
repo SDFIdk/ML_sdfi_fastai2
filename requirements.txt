@@ -9,6 +9,9 @@ jupyter
 matplotlib
 psycopg2-binary
 reportlab
+paramiko
+sqlalchemy
+
 
 # Project-specific packages from Git
 git+https://github.com/rasmuspjohansson/albumentations-multi-channels

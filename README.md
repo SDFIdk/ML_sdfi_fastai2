@@ -6,6 +6,20 @@ Machine learning framework developed and maintained by **KDS** for performing **
 
 ## Installation
 
+### Docker is the recomended install method
+
+
+```sh
+docker build -t  ml_sdfi_fastai2-dev-env:latest .
+
+
+docker run --gpus all -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2   ml_sdfi_fastai2-dev-env:latest /bin/bash
+
+```
+
+### mamba installation should work but is not as actively maintained
+
+
 ```sh
 mamba env create --file environment.yml
 mamba activate ML_sdfi

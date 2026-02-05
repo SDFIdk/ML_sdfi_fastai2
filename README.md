@@ -12,8 +12,8 @@ Machine learning framework developed and maintained by **KDS** for performing **
 ```sh
 docker build -t  ml_sdfi_fastai2-dev-env:latest .
 
+docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2   ml_sdfi_fastai2-dev-env:latest /bin/bash
 
-docker run --gpus all -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2   ml_sdfi_fastai2-dev-env:latest /bin/bash
 
 ```
 
@@ -103,5 +103,6 @@ epoch,train_loss,valid_loss,valid_accuracy,time,lr_0,lr_1,lr_2
 
 All example configuration files are compatible with the example dataset available at:  
 👉 [https://github.com/SDFIdk/multi_channel_dataset_creation](https://github.com/SDFIdk/multi_channel_dataset_creation)
+
 
 

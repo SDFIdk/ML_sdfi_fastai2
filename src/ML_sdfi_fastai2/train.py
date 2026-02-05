@@ -282,63 +282,91 @@ class SwinUPerNetWrapper(nn.Module):
 
 
 # ---------------------------------------------------------------------
-# ConvNeXt V2 + UPerNet (mmseg)
+# ConvNeXt V2 + UPerNet (transformers-based)
 # ---------------------------------------------------------------------
 class ConvNeXtV2UPerNetWrapper(nn.Module):
-    """ConvNeXt V2 backbone + UPerNet decoder (mmseg-style)"""
+    """ConvNeXt V2 backbone + UPerNet decoder using transformers library"""
     def __init__(self, backbone_name, num_classes, n_in, pretrained=True):
         super().__init__()
         try:
-            from mmseg.models import build_segmentor
-            from mmcv import Config
+            from transformers import AutoModelForSemanticSegmentation, UperNetConfig
         except ImportError:
             raise ImportError(
-                "ConvNeXtV2+UPerNet requires mmsegmentation and mmcv"
+                "ConvNeXtV2+UPerNet requires transformers: pip install transformers"
             )
-
+        
+        self.num_classes = num_classes
+        self.n_in = n_in
+        
+        # Map backbone names to HuggingFace model IDs
         arch = backbone_name.replace("convnextv2_", "")
-
-        cfg = Config(dict(
-            model=dict(
-                type='EncoderDecoder',
-                backbone=dict(
-                    type='ConvNeXt',
-                    arch=arch,
-                    in_chans=n_in,
-                    drop_path_rate=0.3,
-                    out_indices=(0, 1, 2, 3),
-                    pretrained=pretrained,
-                    gap_before_final_norm=False,
-                ),
-                decode_head=dict(
-                    type='UPerHead',
-                    in_channels=[96, 192, 384, 768],
-                    in_index=[0, 1, 2, 3],
-                    pool_scales=(1, 2, 3, 6),
-                    channels=512,
-                    num_classes=num_classes,
-                    dropout_ratio=0.1,
-                    align_corners=False,
-                ),
-                auxiliary_head=dict(
-                    type='FCNHead',
-                    in_channels=384,
-                    channels=256,
-                    num_classes=num_classes,
-                    dropout_ratio=0.1,
-                ),
-                test_cfg=dict(mode='whole'),
+        model_map = {
+            "tiny": "openmmlab/upernet-convnext-tiny",
+            "small": "openmmlab/upernet-convnext-small", 
+            "base": "openmmlab/upernet-convnext-base",
+            "large": "openmmlab/upernet-convnext-large",
+        }
+        model_name = model_map.get(arch, f"openmmlab/upernet-convnext-{arch}")
+        
+        if pretrained:
+            self.model = AutoModelForSemanticSegmentation.from_pretrained(
+                model_name,
+                num_labels=num_classes,
+                ignore_mismatched_sizes=True
             )
-        ))
-
-        self.model = build_segmentor(cfg.model)
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+        else:
+            config = UperNetConfig.from_pretrained(model_name)
+            config.num_labels = num_classes
+            self.model = AutoModelForSemanticSegmentation.from_config(config)
+            if n_in != 3:
+                self._adapt_input_channels(n_in)
+    
+    def _adapt_input_channels(self, n_in):
+        """Adapt the model to handle different number of input channels"""
+        try:
+            # Update the config to reflect new number of channels
+            if hasattr(self.model, 'backbone') and hasattr(self.model.backbone, 'config'):
+                self.model.backbone.config.num_channels = n_in
+            
+            if hasattr(self.model, 'backbone') and hasattr(self.model.backbone, 'embeddings'):
+                old_patch_embed = self.model.backbone.embeddings.patch_embeddings
+                
+                new_patch_embed = nn.Conv2d(
+                    n_in,
+                    old_patch_embed.out_channels,
+                    kernel_size=old_patch_embed.kernel_size,
+                    stride=old_patch_embed.stride,
+                    padding=old_patch_embed.padding,
+                    bias=old_patch_embed.bias is not None
+                )
+                
+                nn.init.kaiming_normal_(new_patch_embed.weight, mode='fan_out', nonlinearity='relu')
+                if new_patch_embed.bias is not None:
+                    nn.init.constant_(new_patch_embed.bias, 0)
+                
+                if n_in >= 3 and old_patch_embed.weight.shape[1] == 3:
+                    with torch.no_grad():
+                        new_patch_embed.weight[:, :3] = old_patch_embed.weight
+                
+                self.model.backbone.embeddings.patch_embeddings = new_patch_embed
+                
+                # Also update num_channels in embeddings
+                if hasattr(self.model.backbone.embeddings, 'num_channels'):
+                    self.model.backbone.embeddings.num_channels = n_in
+            else:
+                print("Warning: Could not find patch embedding layer to adapt")
+        except Exception as e:
+            print(f"Warning: Could not adapt input channels: {e}")
 
     def forward(self, x):
-        out = self.model.encode_decode(x, None)
-        if out.shape[-2:] != x.shape[-2:]:
-            out = F.interpolate(out, size=x.shape[-2:],
+        outputs = self.model(pixel_values=x)
+        logits = outputs.logits
+        if logits.shape[-2:] != x.shape[-2:]:
+            logits = F.interpolate(logits, size=x.shape[-2:],
                                 mode='bilinear', align_corners=False)
-        return out
+        return logits
 
 
 # ---------------------------------------------------------------------

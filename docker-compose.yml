@@ -10,7 +10,8 @@ services:
       - /home/rajoh/projects:/home/projects
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility  # Add this line
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONPATH=/workspace/src
     deploy:
       resources:
         reservations:

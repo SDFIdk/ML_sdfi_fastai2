@@ -568,8 +568,8 @@ class BasicTrainingFastai2:
             CSVLoggerWithLR(fname=self.cfg["job_name"] + ".csv", append=True),
         ]
         
-        if n_batch > 0:
-            cbs.append(DoThingsAfterBatch(n_batch=n_batch))
+        #if n_batch > 0:
+        #    cbs.append(DoThingsAfterBatch(n_batch=n_batch))
         
         # Train with appropriate scheduler
         scheduler = self.cfg.get("scheduler", "fit_one_cycle")

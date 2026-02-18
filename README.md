@@ -16,6 +16,15 @@ docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /m
 
 
 ```
+Or pull a prebuilt image from Docker Hub:
+```bash
+sudo docker pull rasmuspjohansson/kds_cuda_pytorch:20260129
+
+sudo docker run --gpus all -it \
+  -w /home/projects/ML_sdfi_fastai2 \
+  rasmuspjohansson/kds_cuda_pytorch:20260129 \
+  /bin/bash
+```
 
 ### mamba installation should work but is not as actively maintained
 
@@ -103,6 +112,7 @@ epoch,train_loss,valid_loss,valid_accuracy,time,lr_0,lr_1,lr_2
 
 All example configuration files are compatible with the example dataset available at:  
 👉 [https://github.com/SDFIdk/multi_channel_dataset_creation](https://github.com/SDFIdk/multi_channel_dataset_creation)
+
 
 
 

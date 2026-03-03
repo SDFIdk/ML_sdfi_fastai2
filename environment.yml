@@ -15,10 +15,10 @@ dependencies:
   - rasterio
   - torchvision
   - pytorch-cuda=12.1
+  - setuptools<76
   - pip
+  # Pip packages that need pkg_resources at build time are in requirements_pip.txt.
+  # After env create run: mamba run -n ML_sdfi pip install --no-build-isolation -r requirements_pip.txt
   - pip:
-      - git+https://github.com/rasmuspjohansson/albumentations-multi-channels
-      - git+https://github.com/walkwithfastai/walkwithfastai.github.io
-      - git+https://github.com/SDFIdk/multi_channel_dataset_creation.git
       - psycopg2-binary
       - reportlab

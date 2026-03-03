@@ -9,8 +9,11 @@ Machine learning framework developed and maintained by **KDS** for performing **
 ```sh
 mamba env create --file environment.yml
 mamba activate ML_sdfi
+pip install --no-build-isolation -r requirements_pip.txt
 pip install -e .
 ```
+
+The git-based pip dependencies (albumentations-multi-channels, walkwithfastai, multi_channel_dataset_creation) are in `requirements_pip.txt` and must be installed with `--no-build-isolation` after creating the environment.
 
 ### Verify CUDA Support
 

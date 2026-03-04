@@ -1,0 +1,8 @@
+# Pip dependencies from environment.yml - install after env create with:
+# mamba run -n ML_sdfi pip install --no-build-isolation -r requirements_pip.txt
+git+https://github.com/rasmuspjohansson/albumentations-multi-channels
+git+https://github.com/walkwithfastai/walkwithfastai.github.io
+git+https://github.com/SDFIdk/multi_channel_dataset_creation.git
+psycopg2-binary
+reportlab
+huggingface_hub

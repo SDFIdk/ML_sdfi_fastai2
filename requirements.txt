@@ -11,6 +11,7 @@ psycopg2-binary
 reportlab
 paramiko
 sqlalchemy
+huggingface_hub
 
 
 # Project-specific packages from Git

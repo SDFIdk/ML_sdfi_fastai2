@@ -42,4 +42,5 @@ dependencies:
       - reportlab
       - transformers
       - safetensors
+      - huggingface_hub
 

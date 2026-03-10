@@ -6,30 +6,33 @@ Machine learning framework developed and maintained by **KDS** for performing **
 
 ## Installation
 
+Use **conda** or **mamba** (Miniforge includes conda; mamba is optional). From the **repository root**:
+
 ```sh
-mamba env create --file environment.yml
-mamba activate ML_sdfi
-pip install --no-build-isolation -r requirements_pip.txt
-pip install -e .
+conda env create --file environment.yml
+conda activate ML_sdfi
+pip install --pre --no-build-isolation -r requirements_pip.txt
 ```
 
-The git-based pip dependencies (albumentations-multi-channels, walkwithfastai, multi_channel_dataset_creation) are in `requirements_pip.txt` and must be installed with `--no-build-isolation` after creating the environment.
+This installs PyTorch nightly with CUDA 12.8 (for NVIDIA Blackwell / RTX 50-series / sm_120 GPUs), fastai, git-based deps, and this package in editable mode.
+
+**Other GPUs:** To use stable PyTorch instead of nightly (e.g. cu121), after the steps above run:
+
+```sh
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+(Adjust `cu121` to your CUDA version; see [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally).)
 
 ### Verify CUDA Support
 
 ```sh
-python
->>> import torch
->>> torch.cuda.is_available()
-True
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
 ```
 
-If `torch.cuda.is_available()` returns `False`, you may need to reinstall a CUDA-compatible version of PyTorch following the instructions at [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally).
+You should see `CUDA available: True` and your GPU name. If not, reinstall PyTorch with the correct CUDA index (nightly cu128 for Blackwell, or a stable cu11x/cu12x for older GPUs).
 
-For example:
-```sh
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+**Windows:** Run commands from a shell where the conda env is activated (`conda activate ML_sdfi`) so that `Library\bin` and `Scripts` are on PATH; this avoids DLL load errors for rasterio/PIL.
 
 ---
 

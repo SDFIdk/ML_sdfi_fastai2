@@ -32,7 +32,12 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available()); pr
 
 You should see `CUDA available: True` and your GPU name. If not, reinstall PyTorch with the correct CUDA index (nightly cu128 for Blackwell, or a stable cu11x/cu12x for older GPUs).
 
-**Windows:** Run commands from a shell where the conda env is activated (`conda activate ML_sdfi`) so that `Library\bin` and `Scripts` are on PATH; this avoids DLL load errors for rasterio/PIL.
+**Windows:** Run commands from a shell where the conda env is activated (`conda activate ML_sdfi`) so that `Library\bin` and `Scripts` are on PATH. After the three steps above, run once: `pip install --force-reinstall pillow rasterio` so PIL and rasterio use pip's Windows wheels (avoids DLL load errors when running training).
+
+If you still see **`ImportError: DLL load failed while importing _imaging`** (or similar PIL/Pillow errors), run:
+- `pip install --force-reinstall pillow`
+- If you also see rasterio-related DLL errors: `pip install --force-reinstall rasterio`  
+Then run your command again (e.g. `train.py`).
 
 ---
 

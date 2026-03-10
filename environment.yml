@@ -7,7 +7,7 @@ dependencies:
   - gdal
   - fiona
   - psutil
-  - rasterio
+  # rasterio (and Pillow) installed via pip from requirements_pip.txt for Windows-compatible builds
   - setuptools<76
   - pip
   # Pip deps (PyTorch nightly, fastai, git packages, this project) installed in one step after env create:

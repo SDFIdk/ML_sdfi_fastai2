@@ -24,13 +24,18 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 (Adjust `cu121` to your CUDA version; see [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally).)
 
-### Verify CUDA Support
-
+## Verify that everything works
 ```sh
 python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
 ```
-
 You should see `CUDA available: True` and your GPU name. If not, reinstall PyTorch with the correct CUDA index (nightly cu128 for Blackwell, or a stable cu11x/cu12x for older GPUs).
+```sh
+python src/ML_sdfi_fastai2/train.py --config configs/example_configs/train_example_dataset.ini
+```
+It should train for a number of epochs without errorrs
+
+
+## Windows
 
 **Windows:** Run commands from a shell where the conda env is activated (`conda activate ML_sdfi`) so that `Library\bin` and `Scripts` are on PATH. After the three steps above, run once: `pip install --force-reinstall pillow rasterio` so PIL and rasterio use pip's Windows wheels (avoids DLL load errors when running training).
 
@@ -100,5 +105,6 @@ epoch,train_loss,valid_loss,valid_accuracy,time,lr_0,lr_1,lr_2
 
 All example configuration files are compatible with the example dataset available at:  
 👉 [https://github.com/SDFIdk/multi_channel_dataset_creation](https://github.com/SDFIdk/multi_channel_dataset_creation)
+
 
 

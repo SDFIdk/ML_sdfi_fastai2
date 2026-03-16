@@ -12,17 +12,20 @@ Machine learning framework developed and maintained by **KDS** for performing **
 ```sh
 docker build -t  ml_sdfi_fastai2-dev-env:latest .
 
-docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2   ml_sdfi_fastai2-dev-env:latest /bin/bash
+docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2  -v /home/rajoh/projects:/home/projects  ml_sdfi_fastai2-dev-env:latest /bin/bash
 
 
 ```
 Or pull a prebuilt image from Docker Hub:
 ```bash
-sudo docker pull rasmuspjohansson/kds_cuda_pytorch:20260129
+sudo docker pull rasmuspjohansson/kds_cuda_pytorch:latest
+
+docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2  rasmuspjohansson/kds_cuda_pytorch:latest /bin/bash
 
 sudo docker run --gpus all -it \
-  -w /home/projects/ML_sdfi_fastai2 \
-  rasmuspjohansson/kds_cuda_pytorch:20260129 \
+  -w /home/rajoh/projects/ML_sdfi_fastai2 \
+
+  rasmuspjohansson/kds_cuda_pytorch:latest \
   /bin/bash
 ```
 

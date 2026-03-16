@@ -6,53 +6,96 @@ Machine learning framework developed and maintained by **KDS** for performing **
 
 ## Installation
 
-### Docker is the recomended install method
+### Conda version
 
+Use **conda** or **mamba** (Miniforge includes conda; mamba is optional). From this repository root (or from a parent folder where all four shared-env repos are cloned as siblings):
 
 ```sh
-docker build -t  ml_sdfi_fastai2-dev-env:latest .
-
-docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2  -v /home/rajoh/projects:/home/projects  ml_sdfi_fastai2-dev-env:latest /bin/bash
-
-
+conda env create --file environment.yml
+conda activate ML_sdfi
+pip install --pre --no-build-isolation -r requirements_pip.txt
 ```
-Or pull a prebuilt image from Docker Hub:
+
+This installs PyTorch nightly with CUDA 12.8 (for NVIDIA Blackwell / RTX 50-series / sm_120 GPUs), fastai, git-based deps, and this package in editable mode.
+
+To install the other shared-env repos and extra deps, from the **project root** (parent of all four repos):
+
+```sh
+cd ML_Production && bash install_local_repos.sh && pip install -r requirements_extra.txt && cd ..
+```
+
+**Other GPUs:** To use stable PyTorch instead of nightly (e.g. cu121), after the steps above run:
+
+```sh
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+(Adjust `cu121` to your CUDA version; see [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally).)
+
+**Use conda's libstdc++ (Linux):** On some Linux systems, set this before running Python:
+
+```sh
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+```
+
+**Verify CUDA support:**
+
+```sh
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
+```
+
+You should see `CUDA available: True` and your GPU name.
+
+**Windows:** After the steps above, run once: `pip install --force-reinstall pillow rasterio` so PIL and rasterio use pip's Windows wheels.
+
+### Docker version
+
+Build and run the repo's Docker image:
+
+```sh
+docker build -t ml_sdfi_fastai2-dev-env:latest .
+
+docker run --gpus all --shm-size=80g -it \
+  -v "$(realpath ..):/projects" \
+  -v /mnt/T/mnt:/mnt/T/mnt \
+  -w /projects/ML_sdfi_fastai2 \
+  ml_sdfi_fastai2-dev-env:latest /bin/bash
+```
+
+Or pull the shared prebuilt image and run with this repo as working directory:
+
 ```bash
-sudo docker pull rasmuspjohansson/kds_cuda_pytorch:latest
+docker pull rasmuspjohansson/kds_cuda_pytorch:latest
 
-docker run --gpus all --shm-size=80g -it   -v "$(realpath ..):/projects"   -v /mnt/T/mnt:/mnt/T/mnt   -w /projects/ML_sdfi_fastai2  rasmuspjohansson/kds_cuda_pytorch:latest /bin/bash
-
-sudo docker run --gpus all -it \
-  -w /home/rajoh/projects/ML_sdfi_fastai2 \
-
-  rasmuspjohansson/kds_cuda_pytorch:latest \
-  /bin/bash
+docker run --gpus all --shm-size=80g -it \
+  -v "$(realpath ..):/projects" \
+  -v /mnt/T/mnt:/mnt/T/mnt \
+  -w /projects/ML_sdfi_fastai2 \
+  rasmuspjohansson/kds_cuda_pytorch:latest /bin/bash
 ```
 
-### mamba installation should work but is not as actively maintained
+(Adjust volume paths as needed. To have all four shared-env repos inside the container, run once from ML_Production: `sh install_local_repos.sh && pip install -r requirements_extra.txt`.)
 
+---
+
+## Verify that everything works
+
+Check that CUDA is available and that training runs without errors:
 
 ```sh
-mamba env create --file environment.yml
-mamba activate ML_sdfi
-pip install -e .
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
 ```
 
-### Verify CUDA Support
+You should see `CUDA available: True` and your GPU name.
+
+To verify all training configs that start with `test` in `configs/example_configs/`, run:
 
 ```sh
-python
->>> import torch
->>> torch.cuda.is_available()
-True
+python verify_functionality.py
+python check_logs.py
 ```
 
-If `torch.cuda.is_available()` returns `False`, you may need to reinstall a CUDA-compatible version of PyTorch following the instructions at [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally).
-
-For example:
-```sh
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+`verify_functionality.py` runs a CUDA check and then trains with each config matching `configs/example_configs/test*.ini`. There should be no errors in the log; `check_logs.py` reports pass or fail.
 
 ---
 
